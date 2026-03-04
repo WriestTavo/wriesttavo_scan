@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
 # ╔══════════════════════════════════════════════════════════════╗
-# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                          ║
+# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                           ║
 # ║   Bug Bounty | Pentesting | Análisis de Vulnerabilidades     ║
 # ║                                                              ║
 # ║   MÓDULOS:                                                   ║
-# ║   [1] TTL / OS Fingerprinting                               ║
-# ║   [2] Port Discovery (Fast SYN)                             ║
-# ║   [3] Service & Version Fingerprinting                      ║
-# ║   [4] Web Recon  (whatweb, nikto, gobuster)                 ║
-# ║   [5] Subdomain Enumeration  (subfinder / amass)            ║
-# ║   [6] WAF Detection  (wafw00f)                              ║
-# ║   [7] HTTP Headers Analysis                                 ║
-# ║   [8] SMB Enumeration  (enum4linux-ng)                      ║
-# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)        ║
-# ║  [10] Reporte HTML profesional                              ║
+# ║   [1] TTL / OS Fingerprinting                                ║
+# ║   [2] Port Discovery (Fast SYN)                              ║
+# ║   [3] Service & Version Fingerprinting                       ║
+# ║   [4] Web Recon  (whatweb, nikto, gobuster)                  ║
+# ║   [5] Subdomain Enumeration  (subfinder / amass)             ║
+# ║   [6] WAF Detection  (wafw00f)                               ║
+# ║   [7] HTTP Headers Analysis                                  ║
+# ║   [8] SMB Enumeration  (enum4linux-ng)                       ║
+# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)         ║
+# ║  [10] Reporte HTML profesional                               ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 set -uo pipefail
@@ -35,7 +35,7 @@ REPORT_FILE=""
 FINDINGS=()
 
 # ════════════════════════════════════════════════════════════════
-# ESTADO INTELIGENTE v4.0 — RETROALIMENTACIÓN TOTAL
+# ESTADO INTELIGENTE v7.0 — RETROALIMENTACIÓN TOTAL
 # Cada módulo escribe aquí. Los siguientes leen y se adaptan.
 # ════════════════════════════════════════════════════════════════
 
@@ -91,6 +91,9 @@ INTEL_NIKTO_FINDINGS=""
 # ── Cloud ──
 INTEL_CLOUD_PROVIDER=""        # aws | gcp | azure | cloudflare | ""
 INTEL_BEHIND_CDN=false
+INTEL_NVD_CVES=()           # CVEs de NVD para el stack
+INTEL_GHSA_VULNS=()         # GitHub Security Advisories
+INTEL_EDB_RESULTS=()        # Exploits EDB encontrados
 INTEL_XXE_FOUND=false           # true si se confirmó XXE
 INTEL_IDOR_FOUND=false          # true si se detectó IDOR potencial
 INTEL_OPEN_REDIRECT_FOUND=false # true si se confirmó open redirect
@@ -167,7 +170,7 @@ show_banner() {
     clear
     echo -e "${C_BLU}"
     echo "  ╔══════════════════════════════════════════════════════╗"
-    echo "  ║   WriestTavo v4.0  ::  WRIΞSTTAV0                   ║"
+    echo "  ║   WriestTavo v7.0  ::  WRIΞSTTAV0                    ║"
     echo "  ║   41 módulos · Stack Moderno · Auto-Update           ║"
     echo "  ║   Bug Bounty | Pentesting | CVE Feed | CTF           ║"
     echo "  ╚══════════════════════════════════════════════════════╝"
@@ -197,7 +200,7 @@ check_deps() {
     local exploit_tools=(searchsploit sqlmap wpscan crackmapexec enum4linux-ng smtp-user-enum snmpwalk)
     local optional_go=(dalfox arjun)
 
-    echo -e "${C_BLU}[*] Verificando dependencias v4.0...${C_RST}"
+    echo -e "${C_BLU}[*] Verificando dependencias v7.0...${C_RST}"
     for cmd in "${tools[@]}"; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
     done
@@ -243,7 +246,7 @@ preparar_directorio() {
 
 
 # ════════════════════════════════════════════════════════════════
-# SISTEMA DE AUTO-ACTUALIZACIÓN v4.0
+# SISTEMA DE AUTO-ACTUALIZACIÓN v7.0
 # ════════════════════════════════════════════════════════════════
 
 # ─── CONFIGURACIÓN DE ACTUALIZACIÓN ──────────────────────────────
@@ -3285,7 +3288,7 @@ _generate_cors_poc() {
     local poc_file="${OUTPUT_DIR}/web/cors_poc.html"
     cat > "$poc_file" << POCEOF
 <!DOCTYPE html>
-<!-- WriestTavo v4.0 — CORS PoC automático -->
+<!-- WriestTavo v7.0 — CORS PoC automático -->
 <!-- Hostear en ${evil_origin} para ejecutar el ataque -->
 <html>
 <head><title>CORS PoC — ${target_url}</title></head>
@@ -4194,6 +4197,557 @@ modulo_iis_windows() {
 }
 
 
+
+# ════════════════════════════════════════════════════════════════
+# MÓDULO 43: EXPLOIT-DB + NVD + GITHUB ADVISORIES INTELLIGENCE
+# Fuentes: searchsploit local · EDB online · NVD API · GHSA API
+# ════════════════════════════════════════════════════════════════
+modulo_edb_intel() {
+    log "MÓDULO 43: Exploit Intelligence — EDB · NVD · GitHub Advisories"
+    tip "Cruza el stack detectado contra exploits reales de Exploit-DB, CVEs de NVD y advisories de GitHub."
+
+    local EDB_CACHE="${UPDATE_DIR}/edb_cache"
+    local NVD_CACHE="${UPDATE_DIR}/cve_cache"
+    mkdir -p "$EDB_CACHE" "$NVD_CACHE"
+
+    local out_file="${OUTPUT_DIR}/recon/exploit_intel.txt"
+    local total_edb=0 total_nvd=0 total_ghsa=0
+    local edb_html="" nvd_html="" ghsa_html=""
+
+    # ── Construir lista de términos de búsqueda desde INTEL ──────
+    local search_terms=()
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " php "         ]] && search_terms+=("php webapps" "php rce" "php lfi")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " apache "      ]] && search_terms+=("apache httpd")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " nginx "       ]] && search_terms+=("nginx")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " nodejs "      ]] && search_terms+=("node.js express")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " java "        ]] && search_terms+=("tomcat" "spring rce")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " aspnet "      ]] && search_terms+=("asp.net iis")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " dotnetcore "  ]] && search_terms+=("asp.net core")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " python "      ]] && search_terms+=("django" "flask python")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " mysql "       ]] && search_terms+=("mysql")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " mongodb "     ]] && search_terms+=("mongodb")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " redis "       ]] && search_terms+=("redis unauthenticated")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " elasticsearch" ]] && search_terms+=("elasticsearch")
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " jenkins "     ]] && search_terms+=("jenkins")
+    [[ "$INTEL_CMS" == "wordpress"  ]] && search_terms+=("wordpress" "wordpress plugin rce" "wordpress plugin sqli")
+    [[ "$INTEL_CMS" == "joomla"     ]] && search_terms+=("joomla")
+    [[ "$INTEL_CMS" == "drupal"     ]] && search_terms+=("drupal")
+    [[ "$INTEL_CMS" == "magento"    ]] && search_terms+=("magento")
+    [[ "$INTEL_FRAMEWORK_BACKEND" == "laravel"  ]] && search_terms+=("laravel")
+    [[ "$INTEL_FRAMEWORK_BACKEND" == "symfony"  ]] && search_terms+=("symfony")
+    [[ "$INTEL_FRAMEWORK_BACKEND" == "django"   ]] && search_terms+=("django")
+    [[ "$INTEL_FRAMEWORK_BACKEND" == "rails"    ]] && search_terms+=("ruby rails")
+    [[ "$INTEL_FRAMEWORK_BACKEND" == "fastapi"  ]] && search_terms+=("fastapi")
+    [[ "$INTEL_OS" == "windows"     ]] && search_terms+=("windows iis privilege escalation")
+    [[ "$INTEL_OS" == "linux"       ]] && search_terms+=("linux local privilege escalation")
+    [[ ${#search_terms[@]} -eq 0    ]] && search_terms+=("webapps php" "webapps rce")
+
+    echo "Exploit Intelligence — $(date)" > "$out_file"
+    echo "Stack: ${INTEL_TECHNOLOGIES[*]} | CMS: ${INTEL_CMS:-none} | OS: ${INTEL_OS:-unknown}" >> "$out_file"
+    echo "─────────────────────────────────────" >> "$out_file"
+
+    # ════════════════════════════════════════════════════════════
+    # PARTE 1: SEARCHSPLOIT LOCAL (funciona offline siempre)
+    # ════════════════════════════════════════════════════════════
+    log "  [1/4] searchsploit — base de datos local"
+
+    if ! command -v searchsploit >/dev/null 2>&1; then
+        warn "searchsploit no disponible. Instalar: sudo apt install exploitdb"
+    else
+        # Palabras clave de alto impacto para filtrar
+        local HIGH_IMPACT="rce\|remote code\|sql injection\|sqli\|auth bypass\|authentication bypass\|privilege escal\|command execut\|file upload\|local file\|lfi\|rfi\|xxe\|deserializ\|unauthenticated\|backdoor\|webshell"
+
+        local seen_edb_ids=""
+        for term in "${search_terms[@]}"; do
+            # searchsploit JSON output
+            local ss_json
+            ss_json=$(searchsploit "$term" --json 2>/dev/null)
+            [[ -z "$ss_json" ]] && continue
+
+            # Parsear con python, guardar en archivo temp
+            local tmp_results="/tmp/ss_results_$$.txt"
+            echo "$ss_json" | python3 - "$term" > "$tmp_results" << 'PYSS'
+import json, sys, re
+
+term = sys.argv[1] if len(sys.argv) > 1 else ""
+HIGH = ["rce","remote code","sql injection","sqli","auth bypass","authentication bypass",
+        "privilege escal","command execut","file upload","local file","lfi","rfi","xxe",
+        "deserializ","unauthenticated","backdoor","webshell","buffer overflow","heap"]
+try:
+    data = json.loads(sys.stdin.read())
+    exploits = data.get("RESULTS_EXPLOIT", [])
+    results = []
+    for e in exploits:
+        title = e.get("Title", "")
+        title_lc = title.lower()
+        score = sum(1 for kw in HIGH if kw in title_lc)
+        score += 2 if e.get("Type","") in ["webapps","remote"] else 0
+        score += 1 if e.get("Platform","").lower() in ["php","multiple","linux","windows"] else 0
+        if score > 0:
+            results.append((score, e))
+    results.sort(key=lambda x: x[0], reverse=True)
+    for score, e in results[:6]:
+        edb_id = e.get("EDB-ID","")
+        title  = e.get("Title","")
+        etype  = e.get("Type","webapps")
+        plat   = e.get("Platform","")
+        date   = e.get("Date","")
+        path   = e.get("Path","")
+        print(f"{edb_id}\t{title}\t{etype}\t{plat}\t{date}\t{path}\t{score}")
+except Exception as ex:
+    pass
+PYSS
+
+            while IFS=$'\t' read -r edb_id title etype plat date path score; do
+                [[ -z "$edb_id" ]] && continue
+                # Deduplicar
+                echo "$seen_edb_ids" | grep -q ",$edb_id," && continue
+                seen_edb_ids="${seen_edb_ids},${edb_id},"
+
+                echo "EDB-${edb_id} | ${title} | ${etype} | ${plat} | ${date}" >> "$out_file"
+                ((total_edb++))
+
+                # Color según impacto
+                local row_color="#161b22"
+                local title_color="#ff6b35"
+                echo "$title" | grep -qiE "rce|remote code|command exec|unauthenticated" && \
+                    row_color="#1a0a0a" && title_color="#ff2d2d"
+                echo "$title" | grep -qiE "sql injection|auth bypass|privilege" && \
+                    row_color="#1a0f0a"
+
+                # Badge Metasploit si existe módulo
+                local msf_badge=""
+                [[ -n "$path" && -f "$path" ]] && \
+                    grep -qi "require 'msf" "$path" 2>/dev/null && \
+                    msf_badge=" <span style='background:#3fb950;color:#000;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:bold;'>MSF</span>"
+
+                local edb_url="https://www.exploit-db.com/exploits/${edb_id}"
+                edb_html+="<tr style='background:${row_color};'>"
+                edb_html+="<td><a href='${edb_url}' target='_blank' style='color:${title_color};font-weight:bold;'>${edb_id}</a></td>"
+                edb_html+="<td style='color:#e6edf3;'>${title}${msf_badge}</td>"
+                edb_html+="<td style='color:#8b949e;font-size:11px;'>${etype}</td>"
+                edb_html+="<td style='color:#8b949e;font-size:11px;'>${plat}</td>"
+                edb_html+="<td style='color:#8b949e;font-size:11px;'>${date}</td>"
+                edb_html+="<td style='font-size:10px;color:#484f58;'>${path##*/}</td>"
+                edb_html+="</tr>"
+            done < "$tmp_results"
+            rm -f "$tmp_results"
+        done
+        ok "searchsploit: ${total_edb} exploits relevantes para el stack detectado"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # PARTE 2: EXPLOIT-DB ONLINE (últimos 30 días, lo más reciente)
+    # ════════════════════════════════════════════════════════════
+    log "  [2/4] Exploit-DB online — exploits recientes"
+
+    # Determinar keyword principal para búsqueda online
+    local main_kw="${INTEL_CMS:-${INTEL_FRAMEWORK_BACKEND:-}}"
+    [[ -z "$main_kw" ]] && [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " php "    ]] && main_kw="php"
+    [[ -z "$main_kw" ]] && [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " nodejs " ]] && main_kw="node.js"
+    [[ -z "$main_kw" ]] && [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " java "   ]] && main_kw="java"
+    [[ -z "$main_kw" ]] && [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " aspnet " ]] && main_kw="asp.net"
+    [[ -z "$main_kw" ]] && main_kw="webapps"
+
+    local edb_cache_file="${EDB_CACHE}/edb_$(echo "$main_kw" | tr ' ' '_').json"
+    local online_data=""
+
+    # Usar caché de 24h si existe
+    if [[ -f "$edb_cache_file" ]]; then
+        local age=$(( $(date +%s) - $(stat -c %Y "$edb_cache_file" 2>/dev/null || echo 0) ))
+        (( age < 86400 )) && online_data=$(cat "$edb_cache_file") && \
+            intel_log "EDB online: usando caché ($(date -d "@$(stat -c %Y "$edb_cache_file")" '+%d/%m %H:%M'))"
+    fi
+
+    if [[ -z "$online_data" ]]; then
+        local kw_enc
+        kw_enc=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${main_kw}'))" 2>/dev/null || echo "$main_kw")
+
+        # Intentar EDB API (DataTables)
+        online_data=$(curl -skL --max-time 20 \
+            "https://www.exploit-db.com/search" \
+            -H "Accept: application/json" \
+            -H "X-Requested-With: XMLHttpRequest" \
+            -H "Referer: https://www.exploit-db.com/" \
+            -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0" \
+            -G \
+            --data-urlencode "draw=1" \
+            --data-urlencode "search[value]=${main_kw}" \
+            --data-urlencode "order[0][dir]=desc" \
+            --data-urlencode "start=0" \
+            --data-urlencode "length=20" \
+            2>/dev/null)
+
+        # Si falla, intentar GitLab CSV
+        if ! echo "$online_data" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+            intel_log "EDB API no responde. Intentando GitLab CSV..."
+            local csv_data
+            csv_data=$(curl -skL --max-time 25 \
+                "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv" \
+                2>/dev/null)
+
+            if [[ -n "$csv_data" ]]; then
+                local thirty_ago
+                thirty_ago=$(date -d "30 days ago" +%Y-%m-%d 2>/dev/null || \
+                             date -v-30d +%Y-%m-%d 2>/dev/null || echo "2024-01-01")
+
+                online_data=$(echo "$csv_data" | python3 - "$main_kw" "$thirty_ago" << 'PYCSV'
+import csv, sys, io, json
+keyword   = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+since     = sys.argv[2]         if len(sys.argv) > 2 else "2024-01-01"
+content   = sys.stdin.read()
+reader    = csv.DictReader(io.StringIO(content))
+results   = []
+for row in reader:
+    title = row.get("description","").lower()
+    plat  = row.get("platform","").lower()
+    date  = row.get("date_published","")
+    if (keyword in title or keyword in plat) and date >= since:
+        results.append({
+            "id":          row.get("id",""),
+            "description": row.get("description",""),
+            "type":        {"description": row.get("type","webapps")},
+            "platform":    {"name": row.get("platform","")},
+            "date_published": date,
+            "verified":    row.get("verified","0")
+        })
+print(json.dumps({"data": results[:20]}))
+PYCSV
+)
+            fi
+        fi
+        [[ -n "$online_data" ]] && echo "$online_data" > "$edb_cache_file"
+    fi
+
+    # Parsear resultados online
+    if [[ -n "$online_data" ]]; then
+        local online_tmp="/tmp/edb_online_$$.txt"
+        echo "$online_data" | python3 - << 'PYONLINE' > "$online_tmp"
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    records = d.get("data", [])
+    for r in records[:20]:
+        edb_id  = str(r.get("id", r.get("EDB-ID", "")))
+        title   = r.get("description", r.get("Title",""))
+        etype   = r.get("type", {})
+        if isinstance(etype, dict): etype = etype.get("description","webapps")
+        plat    = r.get("platform", {})
+        if isinstance(plat, dict):  plat  = plat.get("name","")
+        date    = r.get("date_published", r.get("date",""))
+        verified= str(r.get("verified","0"))
+        print(f"{edb_id}\t{title}\t{etype}\t{plat}\t{date}\t{verified}")
+except:
+    pass
+PYONLINE
+
+        while IFS=$'\t' read -r edb_id title etype plat date verified; do
+            [[ -z "$edb_id" ]] && continue
+            local url="https://www.exploit-db.com/exploits/${edb_id}"
+            local ver_badge=""
+            [[ "$verified" == "1" ]] && \
+                ver_badge=" <span style='background:#1f6feb;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px;'>✓ Verified</span>"
+            local new_badge=" <span style='background:#3fb950;color:#000;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:bold;'>NEW</span>"
+
+            edb_html+="<tr style='background:#0a1628;border-left:3px solid #58a6ff;'>"
+            edb_html+="<td><a href='${url}' target='_blank' style='color:#58a6ff;font-weight:bold;'>🌐 ${edb_id}</a></td>"
+            edb_html+="<td style='color:#e6edf3;'>${title}${ver_badge}${new_badge}</td>"
+            edb_html+="<td style='color:#8b949e;font-size:11px;'>${etype}</td>"
+            edb_html+="<td style='color:#8b949e;font-size:11px;'>${plat}</td>"
+            edb_html+="<td style='color:#58a6ff;font-size:11px;'>${date}</td>"
+            edb_html+="<td><a href='${url}' target='_blank' style='font-size:11px;color:#3fb950;'>Ver →</a></td>"
+            edb_html+="</tr>"
+            ((total_edb++))
+        done < "$online_tmp"
+        rm -f "$online_tmp"
+        ok "EDB online: exploits recientes cargados para '${main_kw}'"
+    else
+        warn "EDB online no accesible. Usando solo base local."
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # PARTE 3: NVD — CVEs con CVSS del stack detectado
+    # ════════════════════════════════════════════════════════════
+    log "  [3/4] NVD — CVEs críticos del stack"
+
+    # Mapeo tech → keyword NVD optimizado
+    declare -A NVD_MAP
+    NVD_MAP[php]="php"
+    NVD_MAP[apache]="apache httpd"
+    NVD_MAP[nginx]="nginx"
+    NVD_MAP[nodejs]="node.js"
+    NVD_MAP[java]="apache tomcat"
+    NVD_MAP[aspnet]="asp.net"
+    NVD_MAP[dotnetcore]="dotnet"
+    NVD_MAP[python]="python"
+    NVD_MAP[django]="django"
+    NVD_MAP[flask]="flask"
+    NVD_MAP[fastapi]="fastapi"
+    NVD_MAP[laravel]="laravel"
+    NVD_MAP[symfony]="symfony"
+    NVD_MAP[rails]="ruby on rails"
+    NVD_MAP[wordpress]="wordpress"
+    NVD_MAP[joomla]="joomla"
+    NVD_MAP[drupal]="drupal"
+    NVD_MAP[mysql]="mysql"
+    NVD_MAP[postgresql]="postgresql"
+    NVD_MAP[mongodb]="mongodb"
+    NVD_MAP[redis]="redis"
+    NVD_MAP[elasticsearch]="elasticsearch"
+    NVD_MAP[jenkins]="jenkins"
+    NVD_MAP[docker]="docker engine"
+    NVD_MAP[kubernetes]="kubernetes"
+
+    # Combinar INTEL_TECHNOLOGIES + CMS + FRAMEWORK en lista de búsqueda
+    local nvd_search_list=()
+    for tech in "${INTEL_TECHNOLOGIES[@]}"; do
+        [[ -n "${NVD_MAP[$tech]:-}" ]] && nvd_search_list+=("$tech")
+    done
+    [[ -n "${INTEL_CMS:-}"              && -n "${NVD_MAP[$INTEL_CMS]:-}"              ]] && nvd_search_list+=("$INTEL_CMS")
+    [[ -n "${INTEL_FRAMEWORK_BACKEND:-}" && -n "${NVD_MAP[$INTEL_FRAMEWORK_BACKEND]:-}" ]] && nvd_search_list+=("$INTEL_FRAMEWORK_BACKEND")
+
+    local nvd_count=0
+    for tech in "${nvd_search_list[@]:0:5}"; do
+        local kw="${NVD_MAP[$tech]}"
+        local nvd_cache_file="${NVD_CACHE}/nvd_${tech}.json"
+        local nvd_data=""
+
+        # Caché 24h
+        if [[ -f "$nvd_cache_file" ]]; then
+            local age=$(( $(date +%s) - $(stat -c %Y "$nvd_cache_file" 2>/dev/null || echo 0) ))
+            (( age < 86400 )) && nvd_data=$(cat "$nvd_cache_file")
+        fi
+
+        if [[ -z "$nvd_data" ]]; then
+            local kw_enc
+            kw_enc=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${kw}'))" 2>/dev/null || echo "${kw// /+}")
+            nvd_data=$(curl -skL --max-time 15 \
+                "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${kw_enc}&resultsPerPage=8&cvssV3Severity=CRITICAL" \
+                2>/dev/null)
+            [[ -n "$nvd_data" ]] && echo "$nvd_data" > "$nvd_cache_file"
+            sleep 0.5  # rate limit NVD
+        fi
+        [[ -z "$nvd_data" ]] && continue
+
+        local nvd_tmp="/tmp/nvd_$$.txt"
+        echo "$nvd_data" | python3 - "$tech" << 'PYNVD' > "$nvd_tmp"
+import json, sys
+tech = sys.argv[1] if len(sys.argv) > 1 else ""
+try:
+    d = json.loads(sys.stdin.read())
+    for v in d.get("vulnerabilities", []):
+        cve  = v.get("cve", {})
+        cid  = cve.get("id", "")
+        desc = cve.get("descriptions", [{}])[0].get("value","")[:120]
+        m    = cve.get("metrics", {})
+        score = 0
+        for k in ["cvssMetricV31","cvssMetricV30","cvssMetricV2"]:
+            if k in m:
+                score = m[k][0].get("cvssData",{}).get("baseScore", 0)
+                break
+        # Buscar ref a exploit-db en referencias del CVE
+        edb_ref = ""
+        for ref in cve.get("references", []):
+            if "exploit-db.com" in ref.get("url",""):
+                edb_ref = ref["url"]
+                break
+        # Fecha publicación
+        pub_date = cve.get("published","")[:10]
+        print(f"{cid}\t{score}\t{tech}\t{desc}\t{edb_ref}\t{pub_date}")
+except:
+    pass
+PYNVD
+
+        while IFS=$'\t' read -r cid score tech_n desc edb_ref pub_date; do
+            [[ -z "$cid" ]] && continue
+
+            INTEL_NVD_CVES+=("${cid}|${score}|${tech_n}|${desc}")
+            echo "CVE: ${cid} CVSS:${score} [${tech_n}] ${desc}" >> "$out_file"
+            ((total_nvd++)) && ((nvd_count++))
+
+            # Color por CVSS
+            local cvss_color="#57cc99"
+            local cvss_num="${score%%.*}"
+            (( cvss_num >= 9 )) && cvss_color="#ff2d2d"
+            (( cvss_num >= 7 && cvss_num < 9 )) && cvss_color="#ff6b35"
+
+            # Badge exploit disponible
+            local exploit_link="—"
+            [[ -n "$edb_ref" ]] && \
+                exploit_link="<a href='${edb_ref}' target='_blank' style='color:#ff6b35;font-weight:bold;'>🎯 EDB</a>"
+
+            nvd_html+="<tr>"
+            nvd_html+="<td><a href='https://nvd.nist.gov/vuln/detail/${cid}' target='_blank' style='color:#c9d1d9;'>${cid}</a></td>"
+            nvd_html+="<td style='color:${cvss_color};font-weight:900;font-size:14px;'>${score}</td>"
+            nvd_html+="<td style='color:#58a6ff;font-size:12px;'>${tech_n}</td>"
+            nvd_html+="<td style='font-size:12px;color:#c9d1d9;'>${desc}</td>"
+            nvd_html+="<td style='font-size:11px;color:#8b949e;'>${pub_date}</td>"
+            nvd_html+="<td>${exploit_link}</td>"
+            nvd_html+="</tr>"
+        done < "$nvd_tmp"
+        rm -f "$nvd_tmp"
+    done
+    [[ $total_nvd -gt 0 ]] && ok "NVD: ${total_nvd} CVEs críticos del stack"
+
+    # ════════════════════════════════════════════════════════════
+    # PARTE 4: GITHUB ADVISORY DATABASE (GHSA) — paquetes
+    # ════════════════════════════════════════════════════════════
+    log "  [4/4] GitHub Advisory Database — paquetes del stack"
+
+    # Ecosistema según framework
+    local ghsa_ecosystem="" ghsa_pkg=""
+    case "${INTEL_FRAMEWORK_BACKEND:-}" in
+        laravel|symfony) ghsa_ecosystem="composer"; ghsa_pkg="${INTEL_FRAMEWORK_BACKEND}" ;;
+        django|flask|fastapi) ghsa_ecosystem="pip"; ghsa_pkg="${INTEL_FRAMEWORK_BACKEND}" ;;
+        rails) ghsa_ecosystem="rubygems"; ghsa_pkg="rails" ;;
+        nestjs|express|nextjs) ghsa_ecosystem="npm"; ghsa_pkg="${INTEL_FRAMEWORK_BACKEND}" ;;
+    esac
+    [[ "$INTEL_CMS" == "wordpress" ]] && ghsa_ecosystem="composer" && ghsa_pkg="wordpress"
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " nodejs " ]] && [[ -z "$ghsa_ecosystem" ]] && \
+        ghsa_ecosystem="npm" && ghsa_pkg="node"
+
+    if [[ -n "$ghsa_ecosystem" ]]; then
+        local ghsa_data
+        ghsa_data=$(curl -skL --max-time 15 \
+            "https://api.github.com/advisories?ecosystem=${ghsa_ecosystem}&per_page=10&sort=updated&type=reviewed" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            2>/dev/null)
+
+        if [[ -n "$ghsa_data" ]]; then
+            local ghsa_tmp="/tmp/ghsa_$$.txt"
+            echo "$ghsa_data" | python3 - "$ghsa_pkg" << 'PYGHSA' > "$ghsa_tmp"
+import json, sys
+keyword = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+try:
+    ads = json.loads(sys.stdin.read())
+    if not isinstance(ads, list): ads = []
+    for a in ads:
+        ghsa_id  = a.get("ghsa_id","")
+        sev      = a.get("severity","unknown")
+        summary  = a.get("summary","")[:100]
+        updated  = a.get("updated_at","")[:10]
+        pkg_name = ""
+        for vuln in a.get("vulnerabilities",[]):
+            p = vuln.get("package",{}).get("name","")
+            if p: pkg_name = p; break
+        # Solo mostrar si es relevante al keyword
+        if keyword in summary.lower() or keyword in pkg_name.lower() or keyword == "node":
+            cvss = 0.0
+            for id_obj in a.get("identifiers",[]):
+                pass  # GHSA no siempre tiene CVSS directo
+            print(f"{ghsa_id}\t{sev}\t{pkg_name}\t{summary}\t{updated}")
+except:
+    pass
+PYGHSA
+
+            while IFS=$'\t' read -r ghsa_id sev pkg_n summary updated; do
+                [[ -z "$ghsa_id" ]] && continue
+                local sev_color="#8b949e"
+                [[ "$sev" == "critical" ]] && sev_color="#ff2d2d"
+                [[ "$sev" == "high"     ]] && sev_color="#ff6b35"
+                [[ "$sev" == "moderate" ]] && sev_color="#ffd23f"
+
+                ghsa_html+="<tr>"
+                ghsa_html+="<td><a href='https://github.com/advisories/${ghsa_id}' target='_blank' style='color:#c9d1d9;'>${ghsa_id}</a></td>"
+                ghsa_html+="<td style='color:${sev_color};font-weight:bold;text-transform:uppercase;'>${sev}</td>"
+                ghsa_html+="<td style='color:#58a6ff;font-size:12px;'>${ghsa_ecosystem}: ${pkg_n}</td>"
+                ghsa_html+="<td style='font-size:12px;'>${summary}</td>"
+                ghsa_html+="<td style='font-size:11px;color:#8b949e;'>${updated}</td>"
+                ghsa_html+="</tr>"
+                ((total_ghsa++))
+                INTEL_GHSA_VULNS+=("${ghsa_id}|${sev}|${pkg_n}|${summary}")
+            done < "$ghsa_tmp"
+            rm -f "$ghsa_tmp"
+            [[ $total_ghsa -gt 0 ]] && ok "GHSA: ${total_ghsa} advisories para ${ghsa_ecosystem}/${ghsa_pkg}"
+        fi
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # GENERAR HALLAZGO CONSOLIDADO EN EL REPORTE
+    # ════════════════════════════════════════════════════════════
+    local full_html=""
+    full_html+="<div style='background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;margin-bottom:14px;'>"
+    full_html+="<span style='color:#8b949e;font-size:12px;'>Stack analizado: "
+    full_html+="<b style='color:#58a6ff;'>${INTEL_TECHNOLOGIES[*]:-desconocido}</b>"
+    [[ -n "$INTEL_CMS" ]] && full_html+=" | CMS: <b style='color:#3fb950;'>${INTEL_CMS}</b>"
+    [[ -n "$INTEL_FRAMEWORK_BACKEND" ]] && full_html+=" | Framework: <b style='color:#3fb950;'>${INTEL_FRAMEWORK_BACKEND}</b>"
+    full_html+=" | OS: <b>${INTEL_OS:-?}</b></span></div>"
+
+    if [[ -n "$edb_html" ]]; then
+        full_html+="<h4 style='color:#ff6b35;margin:14px 0 8px;'>💥 Exploit-DB — Exploits del Stack Detectado</h4>"
+        full_html+="<div style='font-size:11px;color:#8b949e;margin-bottom:6px;'>"
+        full_html+="🌐 = online/reciente &nbsp;|&nbsp; "
+        full_html+="<span style='background:#3fb950;color:#000;padding:1px 5px;border-radius:3px;'>MSF</span> = módulo Metasploit disponible &nbsp;|&nbsp; "
+        full_html+="<span style='background:#1f6feb;color:#fff;padding:1px 5px;border-radius:3px;'>✓ Verified</span> = exploit verificado</div>"
+        full_html+="<table class='vuln-table'>"
+        full_html+="<tr><th>EDB-ID</th><th>Título</th><th>Tipo</th><th>Plataforma</th><th>Fecha</th><th>Archivo</th></tr>"
+        full_html+="${edb_html}</table>"
+    fi
+
+    if [[ -n "$nvd_html" ]]; then
+        full_html+="<h4 style='color:#58a6ff;margin:16px 0 8px;'>🛡 NVD — CVEs Críticos (CVSS ≥ 9.0)</h4>"
+        full_html+="<table class='vuln-table'>"
+        full_html+="<tr><th>CVE-ID</th><th>CVSS</th><th>Tech</th><th>Descripción</th><th>Publicado</th><th>Exploit</th></tr>"
+        full_html+="${nvd_html}</table>"
+    fi
+
+    if [[ -n "$ghsa_html" ]]; then
+        full_html+="<h4 style='color:#3fb950;margin:16px 0 8px;'>📦 GitHub Advisory — Vulnerabilidades de Paquetes</h4>"
+        full_html+="<table class='vuln-table'>"
+        full_html+="<tr><th>GHSA-ID</th><th>Severidad</th><th>Paquete</th><th>Descripción</th><th>Actualizado</th></tr>"
+        full_html+="${ghsa_html}</table>"
+    fi
+
+    if (( total_edb + total_nvd + total_ghsa > 0 )); then
+        local total_all=$(( total_edb + total_nvd + total_ghsa ))
+        add_finding "ALTO" \
+            "Exploit Intelligence: ${total_edb} EDB · ${total_nvd} CVEs NVD · ${total_ghsa} GHSA" \
+            "${full_html}" \
+            "8.5" \
+            "1) Verificar versión exacta instalada vs rango vulnerable de cada CVE. 2) Priorizar: CVSS≥9 primero, luego exploits verificados en EDB. 3) Revisar módulos Metasploit disponibles para validación. 4) Aplicar parches del proveedor." \
+            "searchsploit -x EDB-ID (leer) | searchsploit -m EDB-ID (copiar) | msfconsole → use exploit/... | Ref: exploit-db.com · nvd.nist.gov · github.com/advisories"
+    else
+        add_finding "INFO" "Exploit Intelligence: Sin exploits confirmados" \
+            "No se encontraron exploits automáticamente. Posibles causas: sin internet, stack no identificado, o versiones parcheadas." \
+            "N/A" \
+            "Actualizar: sudo searchsploit --update && sudo $0 --update" \
+            "Manual: exploit-db.com/search?q=TECNOLOGIA | nvd.nist.gov | github.com/advisories"
+    fi
+
+    intel_log "Exploit Intel: EDB=${total_edb} NVD=${total_nvd} GHSA=${total_ghsa} Total=${total_edb+total_nvd+total_ghsa}"
+    echo
+}
+
+# ─── BÚSQUEDA MANUAL EN EDB (INTERACTIVA) ───────────────────────
+modulo_edb_search() {
+    echo
+    echo -ne "${C_YEL}  🔍 Buscar en Exploit-DB + NVD: ${C_RST}"
+    read -r search_query
+    [[ -z "$search_query" ]] && return
+
+    log "Exploit-DB Search: '${search_query}'"
+
+    # searchsploit local
+    if command -v searchsploit >/dev/null 2>&1; then
+        echo -e "\n${C_BLU}── Resultados locales (searchsploit): ──${C_RST}"
+        searchsploit "$search_query" --colour 2>/dev/null | head -25
+        echo -e "\n${C_DIM}  searchsploit -x EDB-ID → leer exploit"
+        echo -e "  searchsploit -m EDB-ID → copiar exploit${C_RST}"
+    fi
+
+    # Links directos
+    local q_enc
+    q_enc=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${search_query}'))" 2>/dev/null || echo "$search_query")
+    echo -e "\n${C_BLU}── Links de referencia: ──${C_RST}"
+    echo -e "  ${C_YEL}EDB:${C_RST}  https://www.exploit-db.com/search?q=${q_enc}"
+    echo -e "  ${C_YEL}NVD:${C_RST}  https://nvd.nist.gov/vuln/search/results?query=${q_enc}"
+    echo -e "  ${C_YEL}GHSA:${C_RST} https://github.com/advisories?query=${q_enc}"
+    echo -e "  ${C_YEL}MSF:${C_RST}  https://www.rapid7.com/db/?q=${q_enc}&type=metasploit"
+    echo
+}
+
+
 # ─── REPORTE HTML PROFESIONAL ────────────────────────────────────
 generar_reporte_html() {
     log "Generando Reporte HTML Profesional..."
@@ -4499,7 +5053,7 @@ menu_modulos() {
     echo -e "${C_BLU}║     Selecciona módulos a ejecutar    ║${C_RST}"
     echo -e "${C_BLU}╚══════════════════════════════════════╝${C_RST}"
     echo
-    echo -e "  ${C_GRN}[1]${C_RST} Full Scan v4.0 ${C_YEL}(41 módulos — stack moderno completo)${C_RST}"
+    echo -e "  ${C_GRN}[1]${C_RST} Full Scan v7.0 ${C_YEL}(44 módulos — stack moderno + exploit intel)${C_RST}"
     echo -e "  ${C_GRN}[2]${C_RST} Recon OSINT  ${C_CYN}(crt.sh + theHarvester + dnsrecon + subdominios)${C_RST}"
     echo -e "  ${C_GRN}[3]${C_RST} Web + SSL     ${C_CYN}(WAF + nikto + nuclei + gobuster + sslscan + arjun)${C_RST}"
     echo -e "  ${C_GRN}[4]${C_RST} Bug Bounty Pro${C_CYN}(recon + framework + injection + CORS + JWT + SSRF)${C_RST}"
@@ -4523,7 +5077,7 @@ menu_modulos() {
             modulo_waf; modulo_http_headers; modulo_whatweb; modulo_sslscan
             modulo_framework_scan; modulo_nuclei; modulo_gobuster; modulo_arjun
             modulo_endpoints; modulo_js_analysis; modulo_jwt
-            modulo_sqli; modulo_xss; modulo_dalfox; modulo_lfi; modulo_ssrf; modulo_cors; modulo_xxe; modulo_idor_redirect ;;
+            modulo_sqli; modulo_xss; modulo_dalfox; modulo_lfi; modulo_ssrf; modulo_cors; modulo_xxe; modulo_idor_redirect; modulo_edb_intel ;;
         5)  modulo_arjun; modulo_sqli; modulo_sqlmap; modulo_nosqli
             modulo_xss; modulo_dalfox; modulo_commix; modulo_lfi; modulo_ssti; modulo_ssrf; modulo_cors ;;
         6)  modulo_waf; modulo_http_headers; modulo_whatweb; modulo_framework_scan
@@ -4547,7 +5101,7 @@ menu_modulos() {
 
 menu_custom() {
     echo
-    echo -e "${C_YEL}Módulos v4.0 (38) — escribe números separados por espacio:${C_RST}"
+    echo -e "${C_YEL}Módulos v7.0 (38) — escribe números separados por espacio:${C_RST}"
     echo -e "  ${C_GRN} 1${C_RST}) TTL/OS          ${C_GRN} 2${C_RST}) Port Scan       ${C_GRN} 3${C_RST}) Version Scan"
     echo -e "  ${C_GRN} 4${C_RST}) WAF              ${C_GRN} 5${C_RST}) HTTP Headers    ${C_GRN} 6${C_RST}) WhatWeb"
     echo -e "  ${C_GRN} 7${C_RST}) Nikto            ${C_GRN} 8${C_RST}) Gobuster        ${C_GRN} 9${C_RST}) Subdominios"
@@ -4562,6 +5116,7 @@ menu_custom() {
     echo -e "  ${C_GRN}34${C_RST}) CORS Misconfig   ${C_GRN}35${C_RST}) JWT Analysis    ${C_GRN}36${C_RST}) NoSQLi"
     echo -e "  ${C_GRN}37${C_RST}) HTTP Methods     ${C_GRN}38${C_RST}) Docker/K8s/Infra"
     echo -e "  ${C_GRN}39${C_RST}) XXE              ${C_GRN}40${C_RST}) IDOR+OpenRedirect  ${C_GRN}41${C_RST}) IIS Windows"
+    echo -e "  ${C_GRN}43${C_RST}) EDB+NVD Intel    ${C_GRN}44${C_RST}) EDB Búsqueda"
     echo
     echo -ne "${C_YEL}Selección: ${C_RST}"
     read -r seleccion
@@ -4582,13 +5137,14 @@ menu_custom() {
             34) modulo_cors ;;          35) modulo_jwt ;;           36) modulo_nosqli ;;
             37) modulo_http_methods ;;  38) modulo_infra_exposure ;;
             39) modulo_xxe ;;           40) modulo_idor_redirect ;;  41) modulo_iis_windows ;;
+            43) modulo_edb_intel ;;    44) modulo_edb_search ;;
         esac
     done
 }
 
 run_full_scan() {
     log "════════════════════════════════════════"
-    log " WriestTavo v4.0 — Full Scan (41 módulos)"
+    log " WriestTavo v7.0 — Full Scan (44 módulos)"
     log "════════════════════════════════════════"
 
     # ── FASE 1: Reconocimiento pasivo (sin tocar el target)
@@ -4650,6 +5206,7 @@ run_full_scan() {
 
     # ── FASE 7: Post-scan y reporting
     log "── FASE 7: Post-Scan ───────────────────"
+    modulo_edb_intel      # Exploit-DB + NVD + GHSA cruzado con el stack
     modulo_vuln_scan
     modulo_searchsploit
 }
@@ -4657,7 +5214,7 @@ run_full_scan() {
 # ─── HELP ───────────────────────────────────────────────────────
 show_help() {
     echo
-    echo -e "${C_BOLD}WriestTavo v4.0${C_RST} :: Pentesting & Bug Bounty Scanner (41 módulos)"
+    echo -e "${C_BOLD}WriestTavo v7.0${C_RST} :: Pentesting & Bug Bounty Scanner (41 módulos)"
     echo
     echo -e "Uso: sudo $0 [opciones] <IP | dominio>"
     echo
@@ -4692,7 +5249,7 @@ show_help() {
 
 # ─── HELPER: INSTALAR DEPENDENCIAS AUTOMÁTICAMENTE ──────────────
 _run_install() {
-    log "WriestTavo Installer — instalando herramientas v4.0"
+    log "WriestTavo Installer — instalando herramientas v7.0"
     echo
 
     # Core
