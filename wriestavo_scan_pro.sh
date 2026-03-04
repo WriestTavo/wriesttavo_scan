@@ -26,7 +26,7 @@ C_PUR="\e[35m";  C_BOLD="\e[1m";   C_DIM="\e[2m"
 
 # ─── CONFIGURACIÓN GLOBAL ───────────────────────────────────────
 TARGET=""
-OUTPUT_DIR="alienrecon_results"
+OUTPUT_DIR="wriestTavo_results"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OPEN_PORTS_CSV=""
 WEB_PORTS=()
@@ -64,7 +64,7 @@ show_banner() {
     echo -e "${C_BLU}"
     echo "  ██████████████████████████████████████████████████████"
     echo "  █                                                    █"
-    echo "  █   WriestTavo v2.0 :: by WRIΞSTTAV0                 █"
+    echo "  █   WriestTavo v2.0  ::  WRIΞSTTAV0                  █"
     echo "  █   Bug Bounty | Pentesting | Vuln Analysis          █"
     echo "  █                                                    █"
     echo "  ██████████████████████████████████████████████████████"
@@ -114,7 +114,9 @@ check_deps() {
 
 preparar_directorio() {
     mkdir -p "${OUTPUT_DIR}"/{nmap,web,recon,exploits,screenshots}
-    REPORT_FILE="${OUTPUT_DIR}/reporte_${TARGET//\//_}_${TIMESTAMP}.html"
+    local safe_target
+    safe_target=$(echo "$TARGET" | sed 's|[/:.]|_|g')
+    REPORT_FILE="${OUTPUT_DIR}/reporte_${safe_target}_${TIMESTAMP}.html"
 }
 
 # ─── MÓDULO 1: TTL / OS ─────────────────────────────────────────
@@ -161,19 +163,31 @@ modulo_port_scan() {
     puertos_nl=$(echo "${nmap_out}" | grep '^[0-9]' | cut -d'/' -f1)
 
     if [[ -z "${puertos_nl}" ]]; then
-        err "0 puertos abiertos encontrados."
-        add_finding "INFO" "Sin puertos abiertos" "No se detectaron puertos TCP abiertos en el target."
-        return
+        # Si vino una URL original, inferir puertos web desde el protocolo
+        if [[ -n "$ORIGINAL_URL" ]]; then
+            warn "nmap no detectó puertos abiertos. Infiriendo desde URL original..."
+            if [[ "$ORIGINAL_URL" =~ ^https:// ]]; then
+                WEB_PORTS=(443); OPEN_PORTS_CSV="443"
+            else
+                WEB_PORTS=(80);  OPEN_PORTS_CSV="80"
+            fi
+            ok "Puerto web asumido: ${C_YEL}${OPEN_PORTS_CSV}${C_RST} (basado en ${ORIGINAL_URL})"
+            add_finding "INFO" "Puertos Web (inferidos)" "nmap bloqueado por firewall/CDN. Usando puerto ${OPEN_PORTS_CSV} desde URL."
+        else
+            err "0 puertos abiertos encontrados."
+            add_finding "INFO" "Sin puertos abiertos" "No se detectaron puertos TCP abiertos en el target."
+            return
+        fi
+    else
+        OPEN_PORTS_CSV=$(echo "${puertos_nl}" | paste -sd ',' -)
+        ok "Puertos abiertos: ${C_YEL}${OPEN_PORTS_CSV}${C_RST}"
+        add_finding "INFO" "Puertos TCP Abiertos" "${OPEN_PORTS_CSV}"
+
+        # Detectar puertos web para módulos posteriores
+        while IFS= read -r p; do
+            is_web_port "$p" && WEB_PORTS+=("$p")
+        done <<< "${puertos_nl}"
     fi
-
-    OPEN_PORTS_CSV=$(echo "${puertos_nl}" | paste -sd ',' -)
-    ok "Puertos abiertos: ${C_YEL}${OPEN_PORTS_CSV}${C_RST}"
-    add_finding "INFO" "Puertos TCP Abiertos" "${OPEN_PORTS_CSV}"
-
-    # Detectar puertos web para módulos posteriores
-    while IFS= read -r p; do
-        is_web_port "$p" && WEB_PORTS+=("$p")
-    done <<< "${puertos_nl}"
 
     echo
     echo "${nmap_out}" > "${OUTPUT_DIR}/nmap/port_discovery.txt"
@@ -211,7 +225,7 @@ modulo_waf() {
     local port="${WEB_PORTS[0]}"
     [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
 
-    local url="${proto}://${TARGET}"
+    local url="${ORIGINAL_URL:-${proto}://${TARGET}}"
     local cmd="wafw00f ${url} -o ${OUTPUT_DIR}/web/waf_detection.txt"
     cmd_show "$cmd"
 
@@ -240,7 +254,7 @@ modulo_http_headers() {
     local proto="http"
     local port="${WEB_PORTS[0]}"
     [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
-    local url="${proto}://${TARGET}:${port}"
+    local url="${ORIGINAL_URL:-${proto}://${TARGET}:${port}}"
 
     cmd_show "curl -skI --max-time 10 ${url}"
 
@@ -310,7 +324,7 @@ modulo_whatweb() {
     local proto="http"
     local port="${WEB_PORTS[0]}"
     [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
-    local url="${proto}://${TARGET}"
+    local url="${ORIGINAL_URL:-${proto}://${TARGET}}"
 
     cmd_show "whatweb -a 3 ${url} --log-brief=${OUTPUT_DIR}/web/whatweb.txt"
 
@@ -371,7 +385,7 @@ modulo_gobuster() {
     local proto="http"
     local port="${WEB_PORTS[0]}"
     [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
-    local url="${proto}://${TARGET}:${port}"
+    local url="${ORIGINAL_URL:-${proto}://${TARGET}:${port}}"
     local output_file="${OUTPUT_DIR}/web/gobuster_${port}.txt"
 
     cmd_show "gobuster dir -u ${url} -w ${wordlist} -t 30 -x php,html,txt,bak,old,zip -o ${output_file} -q"
@@ -535,7 +549,7 @@ generar_reporte_html() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AlienRecon Report :: ${TARGET}</title>
+    <title>WriestTavo Report :: ${TARGET}</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', Arial, sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.6; }
@@ -583,8 +597,8 @@ generar_reporte_html() {
 <body>
 <div class="header">
     <div class="container">
-        <h1>🛸 AlienRecon Security Report</h1>
-        <p class="subtitle">Generado por AlienRecon v2.0 :: 0xAlienSec</p>
+        <h1>⚡ WriestTavo Security Report</h1>
+        <p class="subtitle">Generado por WriestTavo v2.0 :: WRIΞSTTAV0</p>
         <div class="meta">
             <div class="meta-item">Target: <span>${TARGET}</span></div>
             <div class="meta-item">Fecha: <span>${TIMESTAMP}</span></div>
@@ -614,7 +628,7 @@ generar_reporte_html() {
     </div>
 
     <div class="footer">
-        AlienRecon v2.0 by 0xAlienSec &nbsp;|&nbsp; Solo para uso en sistemas con autorización explícita &nbsp;|&nbsp; ${TIMESTAMP}
+        WriestTavo v2.0 by WRIΞSTTAV0 &nbsp;|&nbsp; Solo para uso en sistemas con autorización explícita &nbsp;|&nbsp; ${TIMESTAMP}
     </div>
 </div>
 </body>
@@ -698,13 +712,13 @@ run_full_scan() {
 # ─── HELP ───────────────────────────────────────────────────────
 show_help() {
     echo
-    echo -e "${C_BOLD}AlienRecon v2.0${C_RST} :: Pentesting & Bug Bounty Scanner"
+    echo -e "${C_BOLD}WriestTavo v2.0${C_RST} :: Pentesting & Bug Bounty Scanner"
     echo
     echo -e "Uso: sudo $0 [opciones] <IP | dominio>"
     echo
     echo -e "Opciones:"
     echo -e "  -m, --mode    Modo de escaneo: ${C_YEL}normal${C_RST} | ${C_YEL}stealth${C_RST} | ${C_YEL}aggressive${C_RST}"
-    echo -e "  -o, --output  Directorio de salida (default: alienrecon_results)"
+    echo -e "  -o, --output  Directorio de salida (default: wriestTavo_results)"
     echo -e "  -h, --help    Mostrar esta ayuda"
     echo
     echo -e "Ejemplos:"
@@ -730,6 +744,16 @@ main() {
     done
 
     [[ -z "$TARGET" ]] && show_help && exit 1
+
+    # ── Normalizar TARGET: aceptar URLs completas o IPs/hostnames ──
+    ORIGINAL_URL=""
+    if [[ "$TARGET" =~ ^https?:// ]]; then
+        # Guardar URL original para módulos web
+        ORIGINAL_URL="${TARGET%/}"
+        # Extraer solo el hostname (sin protocolo, sin path, sin puerto)
+        TARGET=$(echo "$TARGET" | sed -E 's|^https?://||; s|/.*||; s|:[0-9]+$||')
+        ok "URL normalizada: ${C_YEL}${ORIGINAL_URL}${C_RST} → hostname: ${C_YEL}${TARGET}${C_RST}"
+    fi
 
     check_root
     check_deps
