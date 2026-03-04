@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
 # ╔══════════════════════════════════════════════════════════════╗
-# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                           ║
+# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                          ║
 # ║   Bug Bounty | Pentesting | Análisis de Vulnerabilidades     ║
 # ║                                                              ║
 # ║   MÓDULOS:                                                   ║
-# ║   [1] TTL / OS Fingerprinting                                ║
-# ║   [2] Port Discovery (Fast SYN)                              ║
-# ║   [3] Service & Version Fingerprinting                       ║
-# ║   [4] Web Recon  (whatweb, nikto, gobuster)                  ║
-# ║   [5] Subdomain Enumeration  (subfinder / amass)             ║
-# ║   [6] WAF Detection  (wafw00f)                               ║
-# ║   [7] HTTP Headers Analysis                                  ║
-# ║   [8] SMB Enumeration  (enum4linux-ng)                       ║
-# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)         ║
-# ║  [10] Reporte HTML profesional                               ║
+# ║   [1] TTL / OS Fingerprinting                               ║
+# ║   [2] Port Discovery (Fast SYN)                             ║
+# ║   [3] Service & Version Fingerprinting                      ║
+# ║   [4] Web Recon  (whatweb, nikto, gobuster)                 ║
+# ║   [5] Subdomain Enumeration  (subfinder / amass)            ║
+# ║   [6] WAF Detection  (wafw00f)                              ║
+# ║   [7] HTTP Headers Analysis                                 ║
+# ║   [8] SMB Enumeration  (enum4linux-ng)                      ║
+# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)        ║
+# ║  [10] Reporte HTML profesional                              ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 set -uo pipefail
@@ -160,15 +160,17 @@ is_web_port() {
 }
 
 # ─── BANNER ─────────────────────────────────────────────────────
+SCRIPT_VERSION="4.0"
+SCRIPT_PATH="$(realpath "$0")"
+
 show_banner() {
     clear
     echo -e "${C_BLU}"
-    echo "  ██████████████████████████████████████████████████████"
-    echo "  █                                                    █"
-    echo "  █   WriestTavo v2.0  ::  WRIΞSTTAV0                  █"
-    echo "  █   Bug Bounty | Pentesting | Vuln Analysis          █"
-    echo "  █                                                    █"
-    echo "  ██████████████████████████████████████████████████████"
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║   WriestTavo v4.0  ::  WRIΞSTTAV0                   ║"
+    echo "  ║   41 módulos · Stack Moderno · Auto-Update           ║"
+    echo "  ║   Bug Bounty | Pentesting | CVE Feed | CTF           ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
     echo -e "${C_RST}"
     echo -e "  Target  : ${C_YEL}${TARGET}${C_RST}"
     echo -e "  Modo    : ${C_CYN}${SCAN_MODE}${C_RST}"
@@ -188,28 +190,47 @@ check_root() {
 
 check_deps() {
     local missing=()
-    local tools=(ping nmap awk grep curl xsltproc)
-    local optional=(whatweb nikto gobuster subfinder wafw00f enum4linux-ng searchsploit ffuf amass)
+    local tools=(ping nmap awk grep curl xsltproc python3)
+    # Herramientas por categoría
+    local web_tools=(whatweb nikto gobuster wafw00f nuclei ffuf dalfox commix arjun)
+    local recon_tools=(subfinder theHarvester dnsrecon amass sslscan sslyze)
+    local exploit_tools=(searchsploit sqlmap wpscan crackmapexec enum4linux-ng smtp-user-enum snmpwalk)
+    local optional_go=(dalfox arjun)
 
-    echo -e "${C_BLU}[*] Verificando dependencias...${C_RST}"
+    echo -e "${C_BLU}[*] Verificando dependencias v4.0...${C_RST}"
     for cmd in "${tools[@]}"; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
     done
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         err "Herramientas obligatorias faltantes: ${missing[*]}"
-        echo -e "  Instala con: ${C_YEL}sudo apt install ${missing[*]}${C_RST}"
+        echo -e "  Instala: ${C_YEL}sudo apt install ${missing[*]}${C_RST}"
         exit 1
     fi
 
-    echo -e "  ${C_GRN}Core tools OK${C_RST}"
-    for cmd in "${optional[@]}"; do
-        if command -v "$cmd" >/dev/null 2>&1; then
-            echo -e "  ${C_GRN}[✓]${C_RST} $cmd"
-        else
-            echo -e "  ${C_YEL}[~]${C_RST} $cmd ${C_DIM}(opcional, no disponible)${C_RST}"
-        fi
+    local have=0 missing_opt=()
+    echo -e "  ${C_GRN}[✓] Core tools OK${C_RST}"
+    for cat_name in "Web" "Recon" "Exploit"; do
+        case "$cat_name" in
+            Web)    local arr=("${web_tools[@]}") ;;
+            Recon)  local arr=("${recon_tools[@]}") ;;
+            Exploit)local arr=("${exploit_tools[@]}") ;;
+        esac
+        local cat_ok="" cat_miss=""
+        for cmd in "${arr[@]}"; do
+            if command -v "$cmd" >/dev/null 2>&1; then
+                cat_ok+=" $cmd"
+                ((have++))
+            else
+                cat_miss+=" $cmd"
+                missing_opt+=("$cmd")
+            fi
+        done
+        [[ -n "$cat_ok"   ]] && echo -e "  ${C_GRN}[✓]${C_RST} ${cat_name}:${cat_ok}"
+        [[ -n "$cat_miss" ]] && echo -e "  ${C_YEL}[~]${C_RST} ${cat_name} faltantes:${cat_miss}"
     done
+
+    echo -e "  Cobertura: ${C_GRN}${have}${C_RST} / $((${#web_tools[@]}+${#recon_tools[@]}+${#exploit_tools[@]})) herramientas opcionales"
     echo
 }
 
@@ -219,6 +240,330 @@ preparar_directorio() {
     safe_target=$(echo "$TARGET" | sed 's|[/:.]|_|g')
     REPORT_FILE="${OUTPUT_DIR}/reporte_${safe_target}_${TIMESTAMP}.html"
 }
+
+
+# ════════════════════════════════════════════════════════════════
+# SISTEMA DE AUTO-ACTUALIZACIÓN v4.0
+# ════════════════════════════════════════════════════════════════
+
+# ─── CONFIGURACIÓN DE ACTUALIZACIÓN ──────────────────────────────
+UPDATE_DIR="${HOME}/.wriestTavo"
+CVE_CACHE="${UPDATE_DIR}/cve_cache"
+CUSTOM_PAYLOADS="${UPDATE_DIR}/custom_payloads"
+NUCLEI_TEMPLATES="${HOME}/nuclei-templates"
+LAST_UPDATE_FILE="${UPDATE_DIR}/last_update.txt"
+CUSTOM_MODULES_DIR="${UPDATE_DIR}/modules"
+INTEL_EXTRA_PAYLOADS_LFI=()
+INTEL_EXTRA_PAYLOADS_SQLI=()
+INTEL_EXTRA_PAYLOADS_XSS=()
+INTEL_RECENT_CVES=()
+INTEL_TECH_CVES=()   # CVEs específicos del tech stack detectado
+
+# ─── INICIALIZAR DIRECTORIOS DE ACTUALIZACIÓN ───────────────────
+init_update_system() {
+    mkdir -p "${UPDATE_DIR}" "${CVE_CACHE}" "${CUSTOM_PAYLOADS}" "${CUSTOM_MODULES_DIR}"
+    # Crear archivos de payloads custom si no existen
+    [[ ! -f "${CUSTOM_PAYLOADS}/sqli_extra.txt" ]]  && touch "${CUSTOM_PAYLOADS}/sqli_extra.txt"
+    [[ ! -f "${CUSTOM_PAYLOADS}/xss_extra.txt" ]]   && touch "${CUSTOM_PAYLOADS}/xss_extra.txt"
+    [[ ! -f "${CUSTOM_PAYLOADS}/lfi_extra.txt" ]]   && touch "${CUSTOM_PAYLOADS}/lfi_extra.txt"
+    [[ ! -f "${CUSTOM_PAYLOADS}/paths_extra.txt" ]] && touch "${CUSTOM_PAYLOADS}/paths_extra.txt"
+    [[ ! -f "${CUSTOM_PAYLOADS}/ssrf_extra.txt" ]]  && touch "${CUSTOM_PAYLOADS}/ssrf_extra.txt"
+}
+
+# ─── MÓDULO DE ACTUALIZACIÓN PRINCIPAL ──────────────────────────
+modulo_update() {
+    log "══ WriestTavo Auto-Updater ══════════════════════"
+
+    init_update_system
+
+    local last_update="nunca"
+    [[ -f "$LAST_UPDATE_FILE" ]] && last_update=$(cat "$LAST_UPDATE_FILE")
+    echo -e "  Última actualización: ${C_CYN}${last_update}${C_RST}"
+    echo
+
+    # ── 1. NUCLEI TEMPLATES (la más importante) ──────────────────
+    if command -v nuclei >/dev/null 2>&1; then
+        log "  [1/5] Actualizando nuclei templates..."
+        nuclei -update-templates -silent 2>/dev/null && \
+            ok "Nuclei templates actualizados ($(nuclei -version 2>&1 | head -1))" || \
+            warn "Error actualizando nuclei templates"
+
+        # Contar templates nuevos
+        local tpl_count
+        tpl_count=$(find "${HOME}/nuclei-templates" -name "*.yaml" 2>/dev/null | wc -l)
+        intel_log "Nuclei: ${tpl_count} templates disponibles"
+    else
+        warn "Nuclei no instalado: sudo apt install nuclei"
+    fi
+
+    # ── 2. CVE FEED — NVD API (últimas 48h) ──────────────────────
+    log "  [2/5] Descargando CVEs recientes (NVD)..."
+    local nvd_cache="${CVE_CACHE}/nvd_recent.json"
+    local two_days_ago
+    two_days_ago=$(date -d "2 days ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null || \
+                   date -v-2d +%Y-%m-%dT%H:%M:%S 2>/dev/null || \
+                   echo "2024-01-01T00:00:00")
+    local today
+    today=$(date +%Y-%m-%dT%H:%M:%S)
+
+    local nvd_resp
+    nvd_resp=$(curl -skL --max-time 20 \
+        "https://services.nvd.nist.gov/rest/json/cves/2.0?pubStartDate=${two_days_ago}&pubEndDate=${today}&resultsPerPage=20" \
+        2>/dev/null)
+
+    if echo "$nvd_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('vulnerabilities',[])),'CVEs')" 2>/dev/null; then
+        echo "$nvd_resp" > "$nvd_cache"
+        # Parsear CVEs críticos (CVSS >= 9.0)
+        python3 - << PYNVD
+import json, sys
+try:
+    with open("${nvd_cache}") as f: data = json.load(f)
+    critical = []
+    for v in data.get("vulnerabilities", []):
+        cve = v.get("cve", {})
+        cve_id = cve.get("id", "")
+        desc = cve.get("descriptions", [{}])[0].get("value", "")[:120]
+        metrics = cve.get("metrics", {})
+        score = 0
+        for key in ["cvssMetricV31", "cvssMetricV30", "cvssMetricV2"]:
+            if key in metrics:
+                score = metrics[key][0].get("cvssData", {}).get("baseScore", 0)
+                break
+        if score >= 9.0:
+            critical.append(f"{cve_id} (CVSS:{score}) — {desc}")
+    if critical:
+        print(f"  CVEs CRÍTICOS (CVSS≥9.0) últimas 48h: {len(critical)}")
+        for c in critical[:5]: print(f"    • {c}")
+    else:
+        print("  Sin CVEs críticos en las últimas 48h")
+except Exception as e:
+    print(f"  Error parseando NVD: {e}")
+PYNVD
+        ok "CVE feed actualizado: ${nvd_cache}"
+    else
+        warn "No se pudo conectar a NVD API. Verificar internet."
+    fi
+
+    # ── 3. EXPLOIT-DB RSS FEED ────────────────────────────────────
+    log "  [3/5] Exploit-DB feed reciente..."
+    local edb_cache="${CVE_CACHE}/exploitdb_recent.txt"
+    local edb_feed
+    edb_feed=$(curl -skL --max-time 15 \
+        "https://www.exploit-db.com/rss.xml" 2>/dev/null | \
+        grep -oP '(?<=<title>)[^<]+' | grep -v "^Exploit" | head -10)
+
+    if [[ -n "$edb_feed" ]]; then
+        echo "$edb_feed" > "$edb_cache"
+        echo -e "${C_YEL}  Exploits recientes en Exploit-DB:${C_RST}"
+        echo "$edb_feed" | head -8 | while IFS= read -r line; do
+            echo -e "    ${C_DIM}•${C_RST} $line"
+        done
+        ok "Exploit-DB feed guardado: ${edb_cache}"
+    else
+        warn "No se pudo obtener feed de Exploit-DB"
+    fi
+
+    # ── 4. ACTUALIZAR PAYLOADS DESDE PAYLOADBOX/SECLISTS ─────────
+    log "  [4/5] Actualizando SecLists / payloads..."
+
+    # Actualizar SecLists si está como repo git
+    if [[ -d "/usr/share/seclists/.git" ]]; then
+        git -C /usr/share/seclists pull --quiet 2>/dev/null && \
+            ok "SecLists actualizado" || warn "Error actualizando SecLists"
+    elif [[ -d "${HOME}/SecLists/.git" ]]; then
+        git -C "${HOME}/SecLists" pull --quiet 2>/dev/null && ok "SecLists actualizado"
+    else
+        warn "SecLists no es repo git. Instalar: sudo apt install seclists"
+    fi
+
+    # Cargar payloads extra desde archivos custom del usuario
+    _load_custom_payloads
+
+    # ── 5. ACTUALIZAR SCRIPT (si hay nueva versión en GitHub) ─────
+    log "  [5/5] Verificando actualizaciones del script..."
+    _check_script_update
+
+    # ── Guardar timestamp ─────────────────────────────────────────
+    date '+%Y-%m-%d %H:%M' > "$LAST_UPDATE_FILE"
+    ok "Actualización completa. Próxima: ejecuta --update cuando quieras."
+    echo
+}
+
+# ─── CARGAR PAYLOADS CUSTOM DEL USUARIO ─────────────────────────
+_load_custom_payloads() {
+    local loaded=0
+
+    # SQLi extra
+    if [[ -s "${CUSTOM_PAYLOADS}/sqli_extra.txt" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_SQLI+=("$line")
+        done < "${CUSTOM_PAYLOADS}/sqli_extra.txt"
+        ((loaded+=${#INTEL_EXTRA_PAYLOADS_SQLI[@]}))
+    fi
+
+    # XSS extra
+    if [[ -s "${CUSTOM_PAYLOADS}/xss_extra.txt" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_XSS+=("$line")
+        done < "${CUSTOM_PAYLOADS}/xss_extra.txt"
+        ((loaded+=${#INTEL_EXTRA_PAYLOADS_XSS[@]}))
+    fi
+
+    # LFI extra
+    if [[ -s "${CUSTOM_PAYLOADS}/lfi_extra.txt" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_LFI+=("$line")
+        done < "${CUSTOM_PAYLOADS}/lfi_extra.txt"
+        ((loaded+=${#INTEL_EXTRA_PAYLOADS_LFI[@]}))
+    fi
+
+    [[ $loaded -gt 0 ]] && intel_log "Payloads custom cargados: ${loaded} total"
+}
+
+# ─── BUSCAR CVES PARA EL STACK DETECTADO ────────────────────────
+buscar_cves_stack() {
+    # Se llama después de detectar tecnologías (módulo 3+6)
+    # Busca CVEs específicos del tech stack en NVD
+    [[ ${#INTEL_TECHNOLOGIES[@]} -eq 0 ]] && return
+
+    local cache="${CVE_CACHE}/stack_cves_${TIMESTAMP}.txt"
+    echo "CVEs del stack — $(date)" > "$cache"
+
+    intel_log "Buscando CVEs para stack: ${INTEL_TECHNOLOGIES[*]}"
+
+    for tech in "${INTEL_TECHNOLOGIES[@]}"; do
+        # Mapear tech a keywords de búsqueda NVD
+        local keyword=""
+        case "$tech" in
+            apache)     keyword="apache+httpd" ;;
+            nginx)      keyword="nginx" ;;
+            php)        keyword="php" ;;
+            laravel)    keyword="laravel" ;;
+            wordpress)  keyword="wordpress" ;;
+            nodejs)     keyword="node.js" ;;
+            express)    keyword="expressjs" ;;
+            django)     keyword="django" ;;
+            flask)      keyword="flask" ;;
+            fastapi)    keyword="fastapi" ;;
+            aspnet)     keyword="asp.net" ;;
+            dotnetcore) keyword="dotnet+core" ;;
+            spring)     keyword="spring+framework" ;;
+            tomcat)     keyword="apache+tomcat" ;;
+            mysql)      keyword="mysql" ;;
+            postgresql) keyword="postgresql" ;;
+            mongodb)    keyword="mongodb" ;;
+            redis)      keyword="redis" ;;
+            elasticsearch) keyword="elasticsearch" ;;
+            docker)     keyword="docker" ;;
+            *)          continue ;;
+        esac
+
+        local nvd_url="https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${keyword}&resultsPerPage=5&cvssV3Severity=CRITICAL"
+        local resp
+        resp=$(curl -skL --max-time 10 "$nvd_url" 2>/dev/null)
+
+        if [[ -n "$resp" ]]; then
+            python3 - << PYCVE
+import json, sys
+try:
+    data = json.loads("""$resp""")
+    cves = data.get("vulnerabilities", [])
+    if cves:
+        print(f"  ${tech} — {len(cves)} CVEs críticos recientes:")
+        for v in cves[:3]:
+            cve = v.get("cve", {})
+            cid = cve.get("id","")
+            desc = cve.get("descriptions",[{}])[0].get("value","")[:100]
+            print(f"    [{cid}] {desc}")
+            with open("${cache}", "a") as f:
+                f.write(f"{cid}|{tech}|{desc}\n")
+except: pass
+PYCVE
+        fi
+        sleep 0.5  # Rate limit NVD API
+    done
+
+    # Cargar CVEs encontrados al intel
+    if [[ -s "$cache" ]]; then
+        while IFS='|' read -r cve_id tech_name desc; do
+            [[ -n "$cve_id" ]] && INTEL_TECH_CVES+=("${cve_id}:${tech_name}:${desc}")
+        done < <(tail -n +2 "$cache")
+        intel_log "Stack CVEs cargados: ${#INTEL_TECH_CVES[@]} CVEs para ${INTEL_TECHNOLOGIES[*]}"
+    fi
+}
+
+# ─── VERIFICAR ACTUALIZACIÓN DEL SCRIPT ─────────────────────────
+_check_script_update() {
+    # Si el usuario tiene el script en un repo git propio, hace pull
+    local script_dir
+    script_dir=$(dirname "$SCRIPT_PATH")
+
+    if [[ -d "${script_dir}/.git" ]]; then
+        local remote_hash
+        remote_hash=$(git -C "$script_dir" fetch origin 2>/dev/null && \
+                      git -C "$script_dir" rev-parse origin/main 2>/dev/null || echo "")
+        local local_hash
+        local_hash=$(git -C "$script_dir" rev-parse HEAD 2>/dev/null || echo "")
+
+        if [[ -n "$remote_hash" && "$remote_hash" != "$local_hash" ]]; then
+            warn "Nueva versión disponible en el repo. Ejecuta: git -C ${script_dir} pull"
+        else
+            ok "Script actualizado (no hay cambios remotos)"
+        fi
+    else
+        ok "Script no vinculado a git (versión standalone). Actualización manual requerida."
+        tip "Para auto-actualizarse: sube el script a un repo git privado."
+    fi
+}
+
+# ─── CARGAR MÓDULOS CUSTOM EXTERNOS ─────────────────────────────
+load_custom_modules() {
+    # El usuario puede agregar módulos propios en ~/.wriestTavo/modules/
+    # Formato: modulo_mi_vuln_nueva.sh — debe contener función modulo_*()
+    [[ ! -d "$CUSTOM_MODULES_DIR" ]] && return
+
+    local count=0
+    for mod_file in "${CUSTOM_MODULES_DIR}"/*.sh; do
+        [[ -f "$mod_file" ]] || continue
+        # Validar sintaxis antes de cargar
+        if bash -n "$mod_file" 2>/dev/null; then
+            source "$mod_file"
+            ((count++))
+            intel_log "Módulo custom cargado: $(basename $mod_file)"
+        else
+            warn "Módulo custom con error de sintaxis: $mod_file (saltando)"
+        fi
+    done
+    [[ $count -gt 0 ]] && ok "${count} módulo(s) custom cargados desde ${CUSTOM_MODULES_DIR}"
+}
+
+# ─── USAR CVEs EN EL REPORTE ────────────────────────────────────
+_report_stack_cves() {
+    # Agrega sección de CVEs del stack al reporte
+    [[ ${#INTEL_TECH_CVES[@]} -eq 0 ]] && return
+
+    local cve_html=""
+    for entry in "${INTEL_TECH_CVES[@]}"; do
+        local cve_id tech_name desc
+        IFS=':' read -r cve_id tech_name desc <<< "$entry"
+        local nvd_url="https://nvd.nist.gov/vuln/detail/${cve_id}"
+        local edb_url="https://www.exploit-db.com/search?cve=${cve_id#CVE-}"
+        cve_html+="<tr>"
+        cve_html+="<td><a href='${nvd_url}' target='_blank'>${cve_id}</a></td>"
+        cve_html+="<td>${tech_name}</td>"
+        cve_html+="<td>${desc}</td>"
+        cve_html+="<td><a href='${edb_url}' target='_blank'>Buscar exploit</a></td>"
+        cve_html+="</tr>"
+    done
+
+    add_finding "ALTO" \
+        "CVEs Recientes del Stack Detectado (${#INTEL_TECH_CVES[@]})" \
+        "<table class='vuln-table'><tr><th>CVE</th><th>Tecnología</th><th>Descripción</th><th>Exploit</th></tr>${cve_html}</table>" \
+        "8.0" \
+        "Verificar si la versión instalada está dentro del rango vulnerable de cada CVE. Aplicar parches disponibles." \
+        "searchsploit CVE-XXXX-XXXX | Para cada CVE: curl https://nvd.nist.gov/vuln/detail/CVE-XXXX"
+}
+
 
 # ─── MÓDULO 1: TTL / OS ─────────────────────────────────────────
 modulo_ttl_os() {
@@ -932,7 +1277,11 @@ modulo_sqli() {
 
         echo -e "  ${C_DIM}Testeando:${C_RST} ${C_CYN}${url_param}${C_RST}"
 
-        for payload in "${PAYLOADS[@]}"; do
+        # Agregar payloads custom del usuario (--update los carga)
+        local ALL_PAYLOADS=("${PAYLOADS[@]}" "${INTEL_EXTRA_PAYLOADS_SQLI[@]}")
+        [[ ${#INTEL_EXTRA_PAYLOADS_SQLI[@]} -gt 0 ]] &&             intel_log "SQLi: +${#INTEL_EXTRA_PAYLOADS_SQLI[@]} payloads custom del usuario"
+
+        for payload in "${ALL_PAYLOADS[@]}"; do
             local encoded_payload
             encoded_payload=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$payload" 2>/dev/null || echo "$payload")
 
@@ -1061,7 +1410,10 @@ modulo_xss() {
 
         echo -e "  ${C_DIM}Testeando:${C_RST} ${C_CYN}${base_part}?${param_part}=...${C_RST}"
 
-        for payload in "${XSS_PAYLOADS[@]}"; do
+        local ALL_XSS=("${XSS_PAYLOADS[@]}" "${INTEL_EXTRA_PAYLOADS_XSS[@]}")
+        [[ ${#INTEL_EXTRA_PAYLOADS_XSS[@]} -gt 0 ]] &&             intel_log "XSS: +${#INTEL_EXTRA_PAYLOADS_XSS[@]} payloads custom"
+
+        for payload in "${ALL_XSS[@]}"; do
             local encoded
             encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${payload}'''))" 2>/dev/null || echo "$payload")
 
@@ -2509,7 +2861,10 @@ modulo_lfi() {
         param=$(echo "$test_url" | grep -oE '[?&][a-zA-Z_]+=' | head -1 | tr -d '?&=')
         [[ -z "$param" ]] && continue
 
-        for payload in "${LFI_PAYLOADS[@]:0:8}"; do
+        local ALL_LFI=("${LFI_PAYLOADS[@]}" "${INTEL_EXTRA_PAYLOADS_LFI[@]}")
+        [[ ${#INTEL_EXTRA_PAYLOADS_LFI[@]} -gt 0 ]] &&             intel_log "LFI: +${#INTEL_EXTRA_PAYLOADS_LFI[@]} payloads custom"
+
+        for payload in "${ALL_LFI[@]:0:12}"; do
             local probe_url="${test_url%=*}=${payload}"
             local response
             response=$(curl -skL --max-time 10 "$probe_url" 2>/dev/null)
@@ -4306,10 +4661,24 @@ show_help() {
     echo
     echo -e "Uso: sudo $0 [opciones] <IP | dominio>"
     echo
-    echo -e "Opciones:"
-    echo -e "  -m, --mode    Modo de escaneo: ${C_YEL}normal${C_RST} | ${C_YEL}stealth${C_RST} | ${C_YEL}aggressive${C_RST}"
+    echo -e "Opciones de escaneo:"
+    echo -e "  -m, --mode    Modo: ${C_YEL}normal${C_RST} | ${C_YEL}stealth${C_RST} | ${C_YEL}aggressive${C_RST}"
     echo -e "  -o, --output  Directorio de salida (default: wriestTavo_results)"
     echo -e "  -h, --help    Mostrar esta ayuda"
+    echo
+    echo -e "Mantenimiento y actualización:"
+    echo -e "  ${C_GRN}--update${C_RST}                  Actualiza nuclei, CVE feed NVD, SecLists, Exploit-DB"
+    echo -e "  ${C_GRN}--install${C_RST}                 Instala todas las dependencias automáticamente"
+    echo -e "  ${C_GRN}--cron${C_RST}                    Configura actualización diaria automática (6am)"
+    echo -e "  ${C_GRN}--show-cves${C_RST}               Muestra CVEs cacheados y payloads custom actuales"
+    echo
+    echo -e "Agregar payloads propios:"
+    echo -e "  ${C_GRN}--add-payload${C_RST} PAYLOAD ${C_GRN}--payload-type${C_RST} TYPE"
+    echo -e "  Tipos: ${C_CYN}sqli${C_RST} | ${C_CYN}xss${C_RST} | ${C_CYN}lfi${C_RST} | ${C_CYN}ssrf${C_RST} | ${C_CYN}paths${C_RST}"
+    echo
+    echo -e "Agregar módulos propios:"
+    echo -e "  Crear archivo .sh en: ${C_CYN}~/.wriestTavo/modules/modulo_mi_vuln.sh${C_RST}"
+    echo -e "  Debe contener función ${C_CYN}modulo_mi_vuln()${C_RST} con la misma estructura"
     echo
     echo -e "Ejemplos:"
     echo -e "  ${C_CYN}sudo $0 192.168.1.1${C_RST}"
@@ -4320,53 +4689,266 @@ show_help() {
     echo
 }
 
+
+# ─── HELPER: INSTALAR DEPENDENCIAS AUTOMÁTICAMENTE ──────────────
+_run_install() {
+    log "WriestTavo Installer — instalando herramientas v4.0"
+    echo
+
+    # Core
+    local apt_tools=(nmap curl python3 python3-pip git wget unzip
+        whatweb nikto gobuster wafw00f sslscan dnsrecon
+        smtp-user-enum snmp sqlmap wpscan crackmapexec
+        commix enum4linux-ng seclists wordlists)
+
+    echo -e "${C_YEL}[1/4] Instalando via apt...${C_RST}"
+    apt-get update -qq 2>/dev/null
+    for tool in "${apt_tools[@]}"; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo -ne "  Instalando ${tool}... "
+            apt-get install -y -qq "$tool" 2>/dev/null && \
+                echo -e "${C_GRN}OK${C_RST}" || echo -e "${C_YEL}skip${C_RST}"
+        else
+            echo -e "  ${C_GRN}[✓]${C_RST} ${tool}"
+        fi
+    done
+
+    # Nuclei (Go)
+    echo -e "${C_YEL}[2/4] Instalando nuclei...${C_RST}"
+    if ! command -v nuclei >/dev/null 2>&1; then
+        if command -v go >/dev/null 2>&1; then
+            go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest 2>/dev/null && \
+                ok "nuclei instalado via go" || warn "Error instalando nuclei"
+        else
+            apt-get install -y -qq nuclei 2>/dev/null || \
+                warn "Instalar manualmente: https://github.com/projectdiscovery/nuclei"
+        fi
+    else
+        ok "nuclei ya instalado"
+    fi
+    command -v nuclei >/dev/null 2>&1 && nuclei -update-templates -silent 2>/dev/null
+
+    # Python tools
+    echo -e "${C_YEL}[3/4] Instalando via pip3...${C_RST}"
+    local pip_tools=("arjun" "dnsrecon" "theHarvester")
+    for pt in "${pip_tools[@]}"; do
+        pip3 install "$pt" --break-system-packages -q 2>/dev/null && \
+            ok "${pt} instalado" || echo -e "  ${C_YEL}[~]${C_RST} ${pt} (ya instalado o error)"
+    done
+
+    # subfinder/dalfox (Go)
+    echo -e "${C_YEL}[4/4] Instalando tools Go (subfinder, dalfox)...${C_RST}"
+    if command -v go >/dev/null 2>&1; then
+        go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 2>/dev/null && ok "subfinder" || true
+        go install github.com/hahwul/dalfox/v2@latest 2>/dev/null && ok "dalfox" || true
+    else
+        warn "Go no instalado. Instalar para: subfinder, dalfox, nuclei"
+        echo -e "  ${C_CYN}sudo apt install golang-go${C_RST}"
+    fi
+
+    # Inicializar sistema de actualización
+    init_update_system
+    echo
+    ok "Instalación completa. Ejecuta: sudo $0 --update"
+    echo -e "  ${C_CYN}Payloads custom: ${CUSTOM_PAYLOADS}/${C_RST}"
+    echo -e "  ${C_CYN}Módulos custom:  ${CUSTOM_MODULES_DIR}/${C_RST}"
+}
+
+# ─── HELPER: CONFIGURAR CRON DE ACTUALIZACIÓN ───────────────────
+_setup_cron() {
+    log "Configurando actualización automática (cron diario 6am)"
+    local script_abs
+    script_abs=$(realpath "$0")
+    local cron_line="0 6 * * * root ${script_abs} --update >> /var/log/wriestTavo_update.log 2>&1"
+    local cron_file="/etc/cron.d/wriestTavo-update"
+
+    echo "$cron_line" > "$cron_file"
+    chmod 644 "$cron_file"
+    ok "Cron creado: ${cron_file}"
+    echo -e "  ${C_DIM}${cron_line}${C_RST}"
+    echo
+    echo -e "  Otras opciones de frecuencia:"
+    echo -e "  ${C_CYN}Cada 12h  :${C_RST} 0 6,18 * * * root ${script_abs} --update"
+    echo -e "  ${C_CYN}Cada lunes:${C_RST} 0 6 * * 1 root ${script_abs} --update"
+    echo -e "  ${C_CYN}Solo nuclei (más rápido):${C_RST} 0 6 * * * root nuclei -update-templates -silent"
+    echo
+    echo -e "  Ver log: ${C_YEL}tail -f /var/log/wriestTavo_update.log${C_RST}"
+    echo -e "  Quitar : ${C_YEL}sudo rm ${cron_file}${C_RST}"
+}
+
+# ─── HELPER: MOSTRAR CVEs CACHEADOS ─────────────────────────────
+_show_cached_cves() {
+    init_update_system
+    echo -e "${C_BLU}═══ CVEs cacheados en ${CVE_CACHE} ═══${C_RST}"
+    echo
+
+    # NVD recientes
+    if [[ -f "${CVE_CACHE}/nvd_recent.json" ]]; then
+        echo -e "${C_YEL}CVEs críticos (CVSS≥9.0) — últimas 48h:${C_RST}"
+        python3 - << PYNVD
+import json
+try:
+    with open("${CVE_CACHE}/nvd_recent.json") as f: data = json.load(f)
+    for v in data.get("vulnerabilities",[]):
+        cve = v.get("cve",{})
+        cid = cve.get("id","")
+        desc = cve.get("descriptions",[{}])[0].get("value","")[:100]
+        m = cve.get("metrics",{})
+        score = 0
+        for k in ["cvssMetricV31","cvssMetricV30","cvssMetricV2"]:
+            if k in m:
+                score = m[k][0].get("cvssData",{}).get("baseScore",0)
+                break
+        if score >= 9.0:
+            print(f"  [{cid}] CVSS:{score} — {desc}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYNVD
+    else
+        echo -e "  ${C_YEL}Sin caché. Ejecuta: sudo $0 --update${C_RST}"
+    fi
+
+    echo
+    # Stack CVEs
+    local stack_files
+    stack_files=$(find "${CVE_CACHE}" -name "stack_cves_*.txt" 2>/dev/null | sort -r | head -1)
+    if [[ -n "$stack_files" ]]; then
+        echo -e "${C_YEL}CVEs del stack (último scan):${C_RST}"
+        tail -n +2 "$stack_files" | while IFS='|' read -r cid tech desc; do
+            echo -e "  ${C_GRN}[${tech}]${C_RST} ${cid} — ${desc:0:90}"
+        done
+    fi
+
+    echo
+    # Payloads custom
+    echo -e "${C_YEL}Payloads custom del usuario:${C_RST}"
+    for ptype in sqli xss lfi ssrf paths; do
+        local pf="${CUSTOM_PAYLOADS}/${ptype}_extra.txt"
+        if [[ -s "$pf" ]]; then
+            local count; count=$(wc -l < "$pf")
+            echo -e "  ${C_GRN}${ptype}:${C_RST} ${count} payloads — ${pf}"
+        else
+            echo -e "  ${C_DIM}${ptype}: vacío${C_RST}"
+        fi
+    done
+
+    echo
+    # Módulos custom
+    echo -e "${C_YEL}Módulos custom:${C_RST}"
+    local mod_count=0
+    for mf in "${CUSTOM_MODULES_DIR}"/*.sh; do
+        [[ -f "$mf" ]] && echo -e "  ${C_GRN}[✓]${C_RST} $(basename $mf)" && ((mod_count++))
+    done
+    [[ $mod_count -eq 0 ]] && echo -e "  ${C_DIM}Sin módulos custom. Agregar en: ${CUSTOM_MODULES_DIR}/${C_RST}"
+}
+
 # ─── MAIN ───────────────────────────────────────────────────────
 main() {
-    # Parsear argumentos
+    # ── Parsear argumentos ────────────────────────────────────────
+    local do_update=false do_install=false do_cron=false
+    local do_add_payload="" PAYLOAD_TYPE_ARG="sqli"
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -m|--mode)   SCAN_MODE="$2"; shift 2 ;;
-            -o|--output) OUTPUT_DIR="$2"; shift 2 ;;
-            -h|--help)   show_help; exit 0 ;;
-            -*)          err "Opción desconocida: $1"; show_help; exit 1 ;;
-            *)           TARGET="$1"; shift ;;
+            -m|--mode)       SCAN_MODE="$2";        shift 2 ;;
+            -o|--output)     OUTPUT_DIR="$2";       shift 2 ;;
+            -h|--help)       show_help;              exit 0  ;;
+            --update)        do_update=true;         shift   ;;
+            --install)       do_install=true;        shift   ;;
+            --cron)          do_cron=true;           shift   ;;
+            --add-payload)   do_add_payload="$2";   shift 2 ;;
+            --payload-type)  PAYLOAD_TYPE_ARG="$2"; shift 2 ;;
+            --show-cves)     _show_cached_cves;      exit 0  ;;
+            -*)              err "Opción desconocida: $1"; show_help; exit 1 ;;
+            *)               TARGET="$1";            shift   ;;
         esac
     done
 
+    # ── Modo: --install ───────────────────────────────────────────
+    if [[ "$do_install" == "true" ]]; then
+        _run_install
+        exit 0
+    fi
+
+    # ── Modo: --update (sin target requerido) ─────────────────────
+    if [[ "$do_update" == "true" ]]; then
+        init_update_system
+        modulo_update
+        exit 0
+    fi
+
+    # ── Modo: --cron (configura tarea automática) ─────────────────
+    if [[ "$do_cron" == "true" ]]; then
+        _setup_cron
+        exit 0
+    fi
+
+    # ── Modo: --add-payload (agrega payload sin escanear) ─────────
+    if [[ -n "$do_add_payload" ]]; then
+        init_update_system
+        local pfile="${CUSTOM_PAYLOADS}/${PAYLOAD_TYPE_ARG}_extra.txt"
+        echo "$do_add_payload" >> "$pfile"
+        ok "Payload agregado → ${pfile}"
+        echo -e "  ${C_DIM}Contenido actual ($(wc -l < "$pfile") payloads):${C_RST}"
+        cat "$pfile"
+        exit 0
+    fi
+
     [[ -z "$TARGET" ]] && show_help && exit 1
 
-    # ── Normalizar TARGET: aceptar URLs completas o IPs/hostnames ──
+    # ── Normalizar TARGET (acepta URLs o IP/hostname) ─────────────
     ORIGINAL_URL=""
     if [[ "$TARGET" =~ ^https?:// ]]; then
-        # Guardar URL original para módulos web
         ORIGINAL_URL="${TARGET%/}"
-        # Extraer solo el hostname (sin protocolo, sin path, sin puerto)
         TARGET=$(echo "$TARGET" | sed -E 's|^https?://||; s|/.*||; s|:[0-9]+$||')
-        ok "URL normalizada: ${C_YEL}${ORIGINAL_URL}${C_RST} → hostname: ${C_YEL}${TARGET}${C_RST}"
+        ok "URL: ${C_YEL}${ORIGINAL_URL}${C_RST} → host: ${C_YEL}${TARGET}${C_RST}"
     fi
 
     check_root
     check_deps
+    init_update_system
+    load_custom_modules     # carga ~/.wriestTavo/modules/*.sh
+    _load_custom_payloads   # carga payloads del usuario en memoria
     preparar_directorio
     show_banner
 
-    echo -e "${C_YEL}⚠  AVISO LEGAL: Este script debe usarse SOLO en sistemas"
-    echo -e "   con autorización explícita del propietario.${C_RST}"
+    echo -e "${C_YEL}⚠  AVISO LEGAL: Solo usar en sistemas con autorización explícita.${C_RST}"
     echo -ne "  ${C_GRN}Confirmo que tengo autorización [s/N]: ${C_RST}"
     read -r confirm
     [[ ! "${confirm,,}" =~ ^(s|si|yes|y|1)$ ]] && { warn "Abortado."; exit 1; }
     echo
 
+    # ── Alertar si hay más de 7 días sin actualizar ───────────────
+    if [[ -f "$LAST_UPDATE_FILE" ]]; then
+        local last_ts now_ts days_old
+        last_ts=$(date -d "$(cat "$LAST_UPDATE_FILE")" +%s 2>/dev/null || echo 0)
+        now_ts=$(date +%s)
+        days_old=$(( (now_ts - last_ts) / 86400 ))
+        if (( days_old >= 7 )); then
+            echo -e "${C_YEL}  ⚠  ${days_old} días sin actualizar. Ejecuta: ${C_CYN}sudo $0 --update${C_RST}"
+            echo
+        fi
+    else
+        echo -e "${C_YEL}  ⚠  Primera ejecución. Recomendado: ${C_CYN}sudo $0 --update${C_RST} primero.${C_RST}"
+        echo
+    fi
+
     menu_modulos
+
+    # ── CVEs del stack detectado (post-scan, usa todo el INTEL) ──
+    [[ ${#INTEL_TECHNOLOGIES[@]} -gt 0 ]] && buscar_cves_stack
+    _report_stack_cves
 
     generar_reporte_html
 
     echo
     echo -e "${C_BLU}════════════════════════════════════════════${C_RST}"
     echo -e "  ${C_GRN}SCAN COMPLETO${C_RST}"
-    echo -e "  Reporte: ${C_YEL}${REPORT_FILE}${C_RST}"
-    echo -e "  Archivos: ${C_YEL}${OUTPUT_DIR}/${C_RST}"
+    echo -e "  Reporte   : ${C_YEL}${REPORT_FILE}${C_RST}"
+    echo -e "  Archivos  : ${C_YEL}${OUTPUT_DIR}/${C_RST}"
+    echo -e "  Payloads+ : ${C_CYN}${CUSTOM_PAYLOADS}/${C_RST}"
+    echo -e "  Módulos+  : ${C_CYN}${CUSTOM_MODULES_DIR}/${C_RST}"
     echo -e "${C_BLU}════════════════════════════════════════════${C_RST}"
+    echo -e "  Mantener  : ${C_DIM}sudo $0 --update${C_RST}"
 }
 
 main "$@"
