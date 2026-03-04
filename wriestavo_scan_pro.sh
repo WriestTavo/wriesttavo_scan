@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
 # ╔══════════════════════════════════════════════════════════════╗
-# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                          ║
+# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                           ║
 # ║   Bug Bounty | Pentesting | Análisis de Vulnerabilidades     ║
 # ║                                                              ║
 # ║   MÓDULOS:                                                   ║
-# ║   [1] TTL / OS Fingerprinting                               ║
-# ║   [2] Port Discovery (Fast SYN)                             ║
-# ║   [3] Service & Version Fingerprinting                      ║
-# ║   [4] Web Recon  (whatweb, nikto, gobuster)                 ║
-# ║   [5] Subdomain Enumeration  (subfinder / amass)            ║
-# ║   [6] WAF Detection  (wafw00f)                              ║
-# ║   [7] HTTP Headers Analysis                                 ║
-# ║   [8] SMB Enumeration  (enum4linux-ng)                      ║
-# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)        ║
-# ║  [10] Reporte HTML profesional                              ║
+# ║   [1] TTL / OS Fingerprinting                                ║
+# ║   [2] Port Discovery (Fast SYN)                              ║
+# ║   [3] Service & Version Fingerprinting                       ║
+# ║   [4] Web Recon  (whatweb, nikto, gobuster)                  ║
+# ║   [5] Subdomain Enumeration  (subfinder / amass)             ║
+# ║   [6] WAF Detection  (wafw00f)                               ║
+# ║   [7] HTTP Headers Analysis                                  ║
+# ║   [8] SMB Enumeration  (enum4linux-ng)                       ║
+# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)         ║
+# ║  [10] Reporte HTML profesional                               ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 set -uo pipefail
@@ -26,7 +26,7 @@ C_PUR="\e[35m";  C_BOLD="\e[1m";   C_DIM="\e[2m"
 
 # ─── CONFIGURACIÓN GLOBAL ───────────────────────────────────────
 TARGET=""
-OUTPUT_DIR="wriestTavo_results"
+OUTPUT_DIR="alienrecon_results"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OPEN_PORTS_CSV=""
 WEB_PORTS=()
@@ -64,7 +64,7 @@ show_banner() {
     echo -e "${C_BLU}"
     echo "  ██████████████████████████████████████████████████████"
     echo "  █                                                    █"
-    echo "  █   WriestTavo v2.0  ::  WRIΞSTTAV0                  █"
+    echo "  █   WriestTavo v2.0 :: by WRIΞSTTAV0                 █"
     echo "  █   Bug Bounty | Pentesting | Vuln Analysis          █"
     echo "  █                                                    █"
     echo "  ██████████████████████████████████████████████████████"
@@ -535,7 +535,7 @@ generar_reporte_html() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WriestTavo Report :: ${TARGET}</title>
+    <title>AlienRecon Report :: ${TARGET}</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', Arial, sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.6; }
@@ -583,8 +583,8 @@ generar_reporte_html() {
 <body>
 <div class="header">
     <div class="container">
-        <h1>⚡ WriestTavo Security Report</h1>
-        <p class="subtitle">Generado por WriestTavo v2.0 :: WRIΞSTTAV0</p>
+        <h1>🛸 AlienRecon Security Report</h1>
+        <p class="subtitle">Generado por AlienRecon v2.0 :: 0xAlienSec</p>
         <div class="meta">
             <div class="meta-item">Target: <span>${TARGET}</span></div>
             <div class="meta-item">Fecha: <span>${TIMESTAMP}</span></div>
@@ -614,7 +614,7 @@ generar_reporte_html() {
     </div>
 
     <div class="footer">
-        WriestTavo v2.0 by WRIΞSTTAV0 &nbsp;|&nbsp; Solo para uso en sistemas con autorización explícita &nbsp;|&nbsp; ${TIMESTAMP}
+        AlienRecon v2.0 by 0xAlienSec &nbsp;|&nbsp; Solo para uso en sistemas con autorización explícita &nbsp;|&nbsp; ${TIMESTAMP}
     </div>
 </div>
 </body>
@@ -698,13 +698,13 @@ run_full_scan() {
 # ─── HELP ───────────────────────────────────────────────────────
 show_help() {
     echo
-    echo -e "${C_BOLD}WriestTavo v2.0${C_RST} :: Pentesting & Bug Bounty Scanner"
+    echo -e "${C_BOLD}AlienRecon v2.0${C_RST} :: Pentesting & Bug Bounty Scanner"
     echo
     echo -e "Uso: sudo $0 [opciones] <IP | dominio>"
     echo
     echo -e "Opciones:"
     echo -e "  -m, --mode    Modo de escaneo: ${C_YEL}normal${C_RST} | ${C_YEL}stealth${C_RST} | ${C_YEL}aggressive${C_RST}"
-    echo -e "  -o, --output  Directorio de salida (default: wriestTavo_results)"
+    echo -e "  -o, --output  Directorio de salida (default: alienrecon_results)"
     echo -e "  -h, --help    Mostrar esta ayuda"
     echo
     echo -e "Ejemplos:"
