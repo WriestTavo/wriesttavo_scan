@@ -180,6 +180,10 @@ add_finding() {
         esac
     fi
     FINDINGS+=("${sev}|||${title}|||${detail}|||${cvss}|||${remediation}|||${next_step}")
+    # Notificar hallazgo en vivo al sistema de progreso
+    case "$sev" in
+        CRÍTICO|ALTO) prog_hallazgo "$sev" "$title" ;;
+    esac
 }
 
 is_domain() {
@@ -190,6 +194,262 @@ is_web_port() {
     local p="$1"
     [[ "$p" == "80" || "$p" == "443" || "$p" == "8080" || "$p" == "8443" || "$p" == "8000" || "$p" == "8888" || "$p" == "8888" || "$p" == "3000" || "$p" == "5000" ]]
 }
+
+# ═════════════════════════════════════════════════════════════════════════
+# SISTEMA DE PROGRESO EN VIVO v2.0
+# Muestra barra, spinner, módulo actual, tiempo y payloads en tiempo real
+# ═════════════════════════════════════════════════════════════════════════
+
+# ── Variables de estado de progreso ─────────────────────────────
+PROG_TOTAL=45          # total módulos a ejecutar
+PROG_CURRENT=0         # módulo en curso (0-based)
+PROG_MODULE_NAME=""    # nombre del módulo actual
+PROG_MODULE_START=0    # timestamp inicio del módulo
+PROG_SCAN_START=0      # timestamp inicio del scan completo
+PROG_FASE=""           # fase actual
+PROG_SPINNER_PID=0     # PID del spinner en background
+PROG_LAST_ACTION=""    # última acción reportada (payload/test)
+PROG_FINDINGS_SO_FAR=0 # hallazgos críticos/altos hasta ahora
+PROG_STATUS_FILE="/tmp/.wriestavo_status_$$"  # archivo de estado IPC
+
+# ── Colores ya definidos en el script principal ──────────────────
+# C_RED C_GRN C_YEL C_BLU C_PUR C_CYN C_DIM C_RST C_BOLD (ya existen)
+
+# ── Iniciar sistema de progreso ──────────────────────────────────
+prog_init() {
+    PROG_SCAN_START=$(date +%s)
+    PROG_CURRENT=0
+    # Detectar si el terminal soporta colores y tput
+    PROG_HAS_TPUT=false
+    command -v tput &>/dev/null && [[ -t 1 ]] && PROG_HAS_TPUT=true
+    # Crear archivo de estado
+    echo "INIT|$(date +%s)|${TARGET}" > "$PROG_STATUS_FILE"
+    # Limpiar al salir
+    trap '_prog_cleanup' EXIT INT TERM
+}
+
+_prog_cleanup() {
+    _spinner_stop
+    [[ -f "$PROG_STATUS_FILE" ]] && rm -f "$PROG_STATUS_FILE"
+    # Restaurar cursor si lo ocultamos
+    $PROG_HAS_TPUT && tput cnorm 2>/dev/null || true
+}
+
+# ── Calcular tiempo transcurrido ─────────────────────────────────
+_elapsed() {
+    local start_ts="${1:-$PROG_SCAN_START}"
+    local now_ts; now_ts=$(date +%s)
+    local secs=$(( now_ts - start_ts ))
+    local h=$(( secs / 3600 ))
+    local m=$(( (secs % 3600) / 60 ))
+    local s=$(( secs % 60 ))
+    (( h > 0 )) && printf "%dh%02dm%02ds" $h $m $s || printf "%dm%02ds" $m $s
+}
+
+# ── Barra de progreso visual ─────────────────────────────────────
+_draw_progress_bar() {
+    local current="${1:-$PROG_CURRENT}"
+    local total="${2:-$PROG_TOTAL}"
+    local bar_width=30
+    local pct=0
+    (( total > 0 )) && pct=$(( current * 100 / total ))
+    local filled=$(( current * bar_width / total ))
+    local empty=$(( bar_width - filled ))
+    local bar=""
+    # Filled part con gradiente de color
+    local bar_color="$C_GRN"
+    (( pct < 30 )) && bar_color="$C_BLU"
+    (( pct >= 30 && pct < 70 )) && bar_color="$C_CYN"
+    (( pct >= 70 )) && bar_color="$C_GRN"
+    # Construir barra
+    bar="${bar_color}"
+    local i
+    for (( i=0; i<filled; i++ )); do bar+="█"; done
+    for (( i=0; i<empty;  i++ )); do bar+="░"; done
+    bar+="${C_RST}"
+    printf "%s" "$bar"
+}
+
+# ── Header de fase ───────────────────────────────────────────────
+prog_fase() {
+    local fase_nombre="$1"
+    local fase_num="${2:-}"
+    PROG_FASE="$fase_nombre"
+    _spinner_stop
+    echo
+    echo -e "${C_BLU}  ┌─────────────────────────────────────────────┐${C_RST}"
+    echo -e "${C_BLU}  │ ${C_BOLD}⚡ ${fase_nombre}${C_RST}${C_BLU} $([ -n "$fase_num" ] && echo "— Fase ${fase_num}/7")$(printf '%*s' $((30 - ${#fase_nombre})) '') │${C_RST}"
+    echo -e "${C_BLU}  └─────────────────────────────────────────────┘${C_RST}"
+    echo
+}
+
+# ── Anuncio de módulo con barra de progreso ──────────────────────
+prog_modulo() {
+    local num="$1"     # número del módulo (ej: 6)
+    local nombre="$2"  # nombre descriptivo (ej: "whatweb — Tech Fingerprinting")
+    local total="${3:-$PROG_TOTAL}"
+
+    _spinner_stop
+    PROG_CURRENT="$num"
+    PROG_MODULE_NAME="$nombre"
+    PROG_MODULE_START=$(date +%s)
+    PROG_LAST_ACTION=""
+
+    # Actualizar archivo de estado
+    echo "MODULE|$(date +%s)|${num}/${total}|${nombre}|${TARGET}" > "$PROG_STATUS_FILE"
+
+    local bar; bar=$(_draw_progress_bar "$num" "$total")
+    local elapsed; elapsed=$(_elapsed "$PROG_SCAN_START")
+    local findings_badge=""
+    (( PROG_FINDINGS_SO_FAR > 0 )) && findings_badge=" ${C_RED}[🎯 ${PROG_FINDINGS_SO_FAR} hallazgos]${C_RST}"
+
+    echo
+    echo -e "  ${C_DIM}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${C_RST}"
+    printf "  ${C_BLU}[*]${C_RST} ${C_BOLD}[%02d/%02d]${C_RST} %s\n" "$num" "$total" "$nombre"
+    printf "  [%s] %s%s %s\n" \
+        "$(printf '%02d%%' $(( num * 100 / total )))" \
+        "$bar" \
+        "$findings_badge" \
+        "${C_DIM}⏱ ${elapsed}${C_RST}"
+    echo -e "  ${C_DIM}┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${C_RST}"
+}
+
+# ── OK del módulo con tiempo ─────────────────────────────────────
+prog_modulo_ok() {
+    local extra_info="${1:-}"
+    _spinner_stop
+    local dur; dur=$(_elapsed "$PROG_MODULE_START")
+    local msg="  ${C_GRN}[✓]${C_RST} ${C_BOLD}${PROG_MODULE_NAME}${C_RST} completado"
+    [[ -n "$dur" ]] && msg+=" ${C_DIM}(${dur})${C_RST}"
+    [[ -n "$extra_info" ]] && msg+=" → ${C_YEL}${extra_info}${C_RST}"
+    echo -e "$msg"
+}
+
+# ── Spinner asíncrono para comandos lentos ───────────────────────
+_spinner_loop() {
+    local msg="$1"
+    local delay=0.12
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    local elapsed_s=0
+    local start_t; start_t=$(date +%s)
+
+    # Ocultar cursor
+    $PROG_HAS_TPUT && tput civis 2>/dev/null
+
+    while true; do
+        local now_t; now_t=$(date +%s)
+        local secs=$(( now_t - start_t ))
+        local m=$(( secs / 60 ))
+        local s=$(( secs % 60 ))
+        local time_str
+        (( m > 0 )) && time_str="${m}m${s}s" || time_str="${s}s"
+
+        # Leer última acción del archivo de estado
+        local last_action=""
+        if [[ -f "$PROG_STATUS_FILE" ]]; then
+            local status_line
+            status_line=$(tail -1 "$PROG_STATUS_FILE" 2>/dev/null)
+            [[ "$status_line" == ACTION* ]] && last_action=" ${C_DIM}→ ${C_RST}"
+        fi
+
+        # Warning de tiempo si tarda mucho
+        local time_color="$C_DIM"
+        (( secs > 60 )) && time_color="$C_YEL"
+        (( secs > 180 )) && time_color="$C_RED"
+
+        printf "\r  ${C_CYN}%s${C_RST}  %-45s  [${time_color}⏱ %s${C_RST}]%s     " \
+            "${frames[$i]}" "$msg" "$time_str" "$last_action"
+
+        i=$(( (i+1) % ${#frames[@]} ))
+        sleep "$delay"
+    done
+}
+
+spinner_start() {
+    local msg="${1:-Trabajando...}"
+    _spinner_stop  # Detener spinner previo si hay uno
+    _spinner_loop "$msg" &
+    PROG_SPINNER_PID=$!
+    disown "$PROG_SPINNER_PID" 2>/dev/null || true
+}
+
+_spinner_stop() {
+    if [[ $PROG_SPINNER_PID -gt 0 ]]; then
+        kill "$PROG_SPINNER_PID" 2>/dev/null
+        wait "$PROG_SPINNER_PID" 2>/dev/null
+        PROG_SPINNER_PID=0
+        printf "\r%-80s\r" " "  # Limpiar la línea del spinner
+        $PROG_HAS_TPUT && tput cnorm 2>/dev/null || true
+    fi
+}
+
+# ── Reportar acción en curso (payload siendo probado, etc.) ──────
+prog_accion() {
+    # Escribe en el archivo de estado para que el spinner lo lea
+    echo "ACTION|$1" >> "$PROG_STATUS_FILE"
+    PROG_LAST_ACTION="$1"
+}
+
+# ── Reportar que se encontró algo (afecta hallazgo counter) ──────
+prog_hallazgo() {
+    local sev="$1"  # CRÍTICO | ALTO | MEDIO | BAJO
+    local titulo="$2"
+    _spinner_stop
+    local icon="ℹ" color="$C_DIM"
+    case "$sev" in
+        CRÍTICO) icon="💀" color="$C_RED";   ((PROG_FINDINGS_SO_FAR++)) ;;
+        ALTO)    icon="🔥" color="${C_YEL}";  ((PROG_FINDINGS_SO_FAR++)) ;;
+        MEDIO)   icon="⚠" color="$C_YEL"  ;;
+        BAJO)    icon="→" color="$C_GRN"   ;;
+    esac
+    echo -e "  ${color}${icon}  [${sev}]${C_RST} ${titulo}"
+}
+
+# ── Info de payload siendo probado ───────────────────────────────
+prog_payload() {
+    local tipo="$1"    # SQLi | XSS | LFI | SSRF
+    local payload="$2" # el payload en sí (truncado a 50 chars)
+    local url="${3:-}"
+    local short_payload="${payload:0:55}"
+    [[ ${#payload} -gt 55 ]] && short_payload+="…"
+    prog_accion "${tipo}: ${short_payload}"
+}
+
+# ── Mostrar comando siendo ejecutado ─────────────────────────────
+prog_cmd() {
+    _spinner_stop
+    local cmd="${1:0:90}"
+    [[ ${#1} -gt 90 ]] && cmd+="…"
+    echo -e "  ${C_DIM}▶ CMD: ${cmd}${C_RST}"
+}
+
+# ── Resumen final al terminar ────────────────────────────────────
+prog_final() {
+    _spinner_stop
+    local total_time; total_time=$(_elapsed "$PROG_SCAN_START")
+    local bar; bar=$(_draw_progress_bar "$PROG_TOTAL" "$PROG_TOTAL")
+    echo
+    echo -e "  ${C_GRN}┌──────────────────────────────────────────────────┐${C_RST}"
+    echo -e "  ${C_GRN}│  ✅  SCAN COMPLETADO                              │${C_RST}"
+    echo -e "  ${C_GRN}│  [100%] ${bar}  │${C_RST}"
+    echo -e "  ${C_GRN}│  ⏱  Tiempo total : ${C_BOLD}${total_time}${C_RST}${C_GRN}$(printf '%*s' $((28 - ${#total_time})) '')│${C_RST}"
+    echo -e "  ${C_GRN}│  🎯  Hallazgos   : ${C_BOLD}${#FINDINGS[@]}${C_RST}${C_GRN} (Crítico+Alto: ${PROG_FINDINGS_SO_FAR})$(printf '%*s' $((14 - ${#FINDINGS[@]})) '')│${C_RST}"
+    echo -e "  ${C_GRN}└──────────────────────────────────────────────────┘${C_RST}"
+    echo
+}
+
+# ── Wrapper para comandos lentos con spinner ─────────────────────
+# Uso: run_with_spinner "Descripción" comando arg1 arg2...
+run_with_spinner() {
+    local desc="$1"; shift
+    spinner_start "$desc"
+    "$@"
+    local exit_code=$?
+    _spinner_stop
+    return $exit_code
+}
+
 
 # ─── BANNER ─────────────────────────────────────────────────────
 SCRIPT_VERSION="4.0"
@@ -605,7 +865,8 @@ _report_stack_cves() {
 
 # ─── MÓDULO 1: TTL / OS ─────────────────────────────────────────
 modulo_ttl_os() {
-    log "MÓDULO 1: TTL / OS Fingerprinting"
+    prog_modulo 1 "TTL / OS Fingerprinting"
+    spinner_start "TTL / OS Fingerprinting"
     local ttl
     ttl=$(ping -c1 -W2 "$TARGET" 2>/dev/null | awk -F'ttl=' '/ttl=/{split($2,a," "); print a[1]; exit}')
 
@@ -636,7 +897,8 @@ modulo_ttl_os() {
 
 # ─── MÓDULO 2: PORT DISCOVERY ───────────────────────────────────
 modulo_port_scan() {
-    log "MÓDULO 2: Port Discovery (SYN Scan — 2 fases)"
+    prog_modulo 2 "Port Discovery — SYN Scan"
+    spinner_start "Port Discovery — SYN Scan"
 
     # ── Configuración por modo ──────────────────────────────────
     local min_rate_fast min_rate_full extra_flags top_ports
@@ -745,7 +1007,8 @@ modulo_port_scan() {
 modulo_version_scan() {
     [[ -z "$OPEN_PORTS_CSV" ]] && warn "Sin puertos para escanear. Saltando módulo 3." && return
 
-    log "MÓDULO 3: Service & Version Fingerprinting"
+    prog_modulo 3 "Service & Version Fingerprinting"
+    spinner_start "Service & Version Fingerprinting"
     local base="${OUTPUT_DIR}/nmap/${TARGET//\//_}_version"
 
     local cmd="nmap -n -Pn -sV -sC -vv --min-rate 2000 -p${OPEN_PORTS_CSV} -oA ${base} ${TARGET}"
@@ -800,7 +1063,8 @@ modulo_waf() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
     command -v wafw00f >/dev/null 2>&1 || { warn "wafw00f no disponible. Instala: sudo apt install wafw00f"; return; }
 
-    log "MÓDULO 4: WAF Detection"
+    prog_modulo 4 "WAF Detection"
+    spinner_start "WAF Detection"
     local proto="http"
     local port="${WEB_PORTS[0]}"
     [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
@@ -838,7 +1102,8 @@ modulo_waf() {
 modulo_http_headers() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
 
-    log "MÓDULO 5: HTTP Security Headers Analysis"
+    prog_modulo 5 "HTTP Security Headers"
+    spinner_start "HTTP Security Headers"
     local proto="http"
     local port="${WEB_PORTS[0]}"
     [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
@@ -908,7 +1173,8 @@ modulo_whatweb() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
     command -v whatweb >/dev/null 2>&1 || { warn "whatweb no disponible."; return; }
 
-    log "MÓDULO 6: Web Technology Fingerprinting (whatweb)"
+    prog_modulo 6 "whatweb — Tech Fingerprinting"
+    spinner_start "whatweb — Tech Fingerprinting"
     local proto="http"
     local port="${WEB_PORTS[0]}"
     [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
@@ -989,7 +1255,8 @@ modulo_nikto() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
     command -v nikto >/dev/null 2>&1 || { warn "nikto no disponible."; return; }
 
-    log "MÓDULO 7: Nikto Web Vulnerability Scanner"
+    prog_modulo 7 "Nikto — Web Vuln Scanner"
+    spinner_start "Nikto — Web Vuln Scanner"
     tip "Nikto es ruidoso. En Bug Bounty verifica que esté permitido en el scope."
 
     local port="${WEB_PORTS[0]}"
@@ -1016,7 +1283,8 @@ modulo_gobuster() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
     command -v gobuster >/dev/null 2>&1 || { warn "gobuster no disponible. Instala: sudo apt install gobuster"; return; }
 
-    log "MÓDULO 8: Directory & File Fuzzing (gobuster)"
+    prog_modulo 8 "Gobuster — Directory Fuzzing"
+    spinner_start "Gobuster — Directory Fuzzing"
 
     # ── INTEL READ: ajustar según lo descubierto ──
     # Wordlist base
@@ -1061,6 +1329,7 @@ modulo_gobuster() {
     local url="${ORIGINAL_URL:-${proto}://${TARGET}:${port}}"
     local output_file="${OUTPUT_DIR}/web/gobuster_${port}.txt"
 
+    spinner_start "gobuster — fuerza bruta de directorios y rutas…"
     cmd_show "gobuster dir -u ${url} -w ${wordlist} -t ${threads} -x ${extensions} -o ${output_file} -q"
 
     gobuster dir -u "${url}" \
@@ -1112,7 +1381,8 @@ modulo_subdominios() {
     is_domain "$TARGET" || { log "Target es IP. Saltando enumeración de subdominios."; return; }
     command -v subfinder >/dev/null 2>&1 || { warn "subfinder no disponible. Instala: go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"; return; }
 
-    log "MÓDULO 9: Subdomain Enumeration (subfinder)"
+    prog_modulo 9 "Subdomain Enumeration"
+    spinner_start "Subdomain Enumeration"
     local output_file="${OUTPUT_DIR}/recon/subdominios.txt"
 
     cmd_show "subfinder -d ${TARGET} -o ${output_file} -all -silent"
@@ -1134,7 +1404,8 @@ modulo_smb() {
     echo "$OPEN_PORTS_CSV" | grep -qE "(445|139)" || return
     command -v enum4linux-ng >/dev/null 2>&1 || { warn "enum4linux-ng no disponible. Instala: sudo apt install enum4linux-ng"; return; }
 
-    log "MÓDULO 10: SMB Enumeration (enum4linux-ng)"
+    prog_modulo 10 "SMB Enumeration"
+    spinner_start "SMB Enumeration"
     tip "SMB suele tener misconfigs críticas: shares abiertos, RID brute, null sessions."
 
     local output_file="${OUTPUT_DIR}/recon/smb_enum.txt"
@@ -1154,7 +1425,8 @@ modulo_smb() {
 modulo_vuln_scan() {
     [[ -z "$OPEN_PORTS_CSV" ]] && return
 
-    log "MÓDULO 11: Vulnerability Scan (nmap vuln scripts)"
+    prog_modulo 11 "Vuln Scan — NSE Scripts"
+    spinner_start "Vuln Scan — NSE Scripts"
     tip "Este módulo puede tardar varios minutos. Ideal ejecutar en CTF y entornos controlados."
 
     local base="${OUTPUT_DIR}/nmap/${TARGET//\//_}_vulns"
@@ -1225,7 +1497,8 @@ modulo_searchsploit() {
 modulo_sqli() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && warn "Sin puertos web. Saltando SQLi." && return
 
-    log "MÓDULO 13: SQL Injection — Pruebas Básicas (curl)"
+    prog_modulo 13 "SQLi — Inyección SQL"
+    spinner_start "SQLi — Inyección SQL"
     tip "Se prueban payloads básicos en parámetros GET. No reemplaza sqlmap, pero da señales rápidas."
 
     local proto="http"
@@ -1325,6 +1598,7 @@ modulo_sqli() {
 
             local test_url="${base_param}?${params}${encoded_payload}"
             local response
+            prog_payload "SQLi" "$payload" "${ORIGINAL_URL:-${TARGET}}"  # live progress
             response=$(curl -skL --max-time 8 \
                 -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
                 "${test_url}" 2>/dev/null | tr '[:upper:]' '[:lower:]')
@@ -1390,7 +1664,8 @@ modulo_sqli() {
 modulo_xss() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && warn "Sin puertos web. Saltando XSS." && return
 
-    log "MÓDULO 14: XSS — Cross-Site Scripting Básico (curl)"
+    prog_modulo 14 "XSS — Cross-Site Scripting"
+    spinner_start "XSS — Cross-Site Scripting"
     tip "Pruebas de reflexión de payloads. Un XSS real requiere navegador para ejecutar."
 
     local proto="http"
@@ -1462,6 +1737,7 @@ modulo_xss() {
             local test_url="${base_part}?${param_part}=${encoded}"
             local response
             response=$(curl -skL --max-time 8 \
+                prog_payload "XSS" "$payload" "${ORIGINAL_URL:-${TARGET}}"  # live progress
                 -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
                 "${test_url}" 2>/dev/null)
 
@@ -2066,7 +2342,8 @@ modulo_theharvester() {
     is_domain "$TARGET" || { warn "theHarvester requiere dominio, no IP."; return; }
     command -v theHarvester >/dev/null 2>&1 || { warn "theHarvester no disponible: sudo apt install theharvester"; return; }
 
-    log "MÓDULO 17: theHarvester — OSINT Pasivo"
+    prog_modulo 17 "theHarvester — OSINT Pasivo"
+    spinner_start "theHarvester — OSINT Pasivo"
     tip "Recolecta emails, IPs y subdominios sin tocar el target. Safe para Bug Bounty."
 
     local out_txt="${OUTPUT_DIR}/recon/theharvester.txt"
@@ -2114,7 +2391,8 @@ modulo_dnsrecon() {
     is_domain "$TARGET" || { warn "dnsrecon requiere dominio."; return; }
     command -v dnsrecon >/dev/null 2>&1 || { warn "dnsrecon no disponible: sudo apt install dnsrecon"; return; }
 
-    log "MÓDULO 18: dnsrecon — DNS Completo (Zone Transfer, SPF, DMARC)"
+    prog_modulo 18 "dnsrecon — DNS / Zone Transfer"
+    spinner_start "dnsrecon — DNS / Zone Transfer"
     tip "Zone transfer puede revelar TODA la infraestructura interna del dominio."
 
     local out_file="${OUTPUT_DIR}/recon/dnsrecon.txt"
@@ -2166,7 +2444,8 @@ modulo_sslscan() {
 
     command -v sslscan >/dev/null 2>&1 || { warn "sslscan no disponible: sudo apt install sslscan"; return; }
 
-    log "MÓDULO 19: SSLScan — Análisis TLS/SSL"
+    prog_modulo 19 "SSLScan — TLS Analysis"
+    spinner_start "SSLScan — TLS Analysis"
     tip "TLS 1.0/1.1 y ciphers débiles son hallazgos Medium-High en Bug Bounty."
 
     local out_file="${OUTPUT_DIR}/web/sslscan.txt"
@@ -2211,7 +2490,8 @@ modulo_nuclei() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && { warn "Nuclei requiere puertos web."; return; }
     command -v nuclei >/dev/null 2>&1 || { warn "nuclei no disponible: sudo apt install nuclei && nuclei -update-templates"; return; }
 
-    log "MÓDULO 20: Nuclei — CVE & Misconfiguration Scanner"
+    prog_modulo 20 "Nuclei — 9000+ Templates"
+    spinner_start "Nuclei — 9000+ Templates"
     tip "Nuclei es el estándar en Bug Bounty. 9000+ templates, CVEs con CVSS incluidos."
 
     local proto="http"; local port="${WEB_PORTS[0]}"
@@ -2225,6 +2505,7 @@ modulo_nuclei() {
 
     cmd_show "nuclei -u ${url} ${template_flags} -severity critical,high,medium -silent"
 
+    spinner_start "nuclei — 9000+ templates CVE/miscfg/exposures (proceso largo)…"
     nuclei -u "${url}" \
         ${template_flags} \
         -severity critical,high,medium,low \
@@ -2300,6 +2581,7 @@ modulo_sqlmap() {
 
     cmd_show "sqlmap -u ${sqli_url} --dbs ${waf_flags} ${dbms_flag}"
 
+    spinner_start "sqlmap — explotación automática SQLi con bypass WAF…"
     sqlmap -u "${sqli_url}" --dbs ${waf_flags} ${dbms_flag} \
         --output-dir="${out_dir}" --timeout=30 2>/dev/null | tee "${out_dir}/output.txt"
 
@@ -2324,7 +2606,8 @@ modulo_dalfox() {
         return
     }
 
-    log "MÓDULO 22: Dalfox — XSS Avanzado (DOM-XSS, Reflected, Header)"
+    prog_modulo 22 "Dalfox — XSS Avanzado"
+    spinner_start "Dalfox — XSS Avanzado"
     tip "Dalfox detecta XSS que curl no puede: DOM-based, contexto JS, codificaciones complejas."
 
     local proto="http"; local port="${WEB_PORTS[0]}"
@@ -2336,6 +2619,7 @@ modulo_dalfox() {
     [[ "$INTEL_WAF_DETECTED" == "true" ]] && waf_flags="--waf-evasion --delay 500"
 
     cmd_show "dalfox url ${url} --silence --output ${out_file} ${waf_flags}"
+    spinner_start "dalfox — XSS avanzado DOM/Header/CSP bypass…"
     dalfox url "${url}" --silence --output "${out_file}" ${waf_flags} --timeout 30 2>/dev/null
 
     if [[ ${#INTEL_INJECTABLE_URLS[@]} -gt 0 ]]; then
@@ -2464,7 +2748,8 @@ except: pass
 # ─── MÓDULO 25: WPSCAN — WORDPRESS ───────────────────────────────
 modulo_wpscan() {
     if [[ "$INTEL_CMS" != "wordpress" ]]; then
-        log "MÓDULO 25: WPScan — WordPress no detectado. Saltando."
+        prog_modulo 25 "WPScan — WordPress Audit"
+        spinner_start "WPScan — WordPress Audit"
         return
     fi
     command -v wpscan >/dev/null 2>&1 || { warn "wpscan no disponible: sudo apt install wpscan"; return; }
@@ -2507,7 +2792,8 @@ modulo_wpscan() {
 modulo_crtsh() {
     is_domain "$TARGET" || return
 
-    log "MÓDULO 26: crt.sh — Certificate Transparency"
+    prog_modulo 26 "crt.sh — Certificate Transparency"
+    spinner_start "crt.sh — Certificate Transparency"
     tip "100% pasivo. Revela subdominios desde logs públicos de certificados."
 
     local out_file="${OUTPUT_DIR}/recon/crtsh_subdomains.txt"
@@ -2616,7 +2902,8 @@ modulo_cme() {
     command -v cme           >/dev/null 2>&1 && CME_CMD="cme"
     [[ -z "$CME_CMD" ]] && { warn "crackmapexec no disponible: sudo apt install crackmapexec"; return; }
 
-    log "MÓDULO 29: CrackMapExec — SMB/LDAP/WinRM Enumeration"
+    prog_modulo 29 "CrackMapExec — CME"
+    spinner_start "CrackMapExec — CME"
     tip "CME identifica null sessions, SMB signing, versiones y dominios AD sin credenciales."
 
     local out_file="${OUTPUT_DIR}/recon/cme_results.txt"
@@ -2748,7 +3035,8 @@ modulo_framework_scan() {
         return
     }
 
-    log "MÓDULO 30: Framework Deep Scan — Rutas Críticas por Stack"
+    prog_modulo 30 "Framework Routes — Rutas Críticas"
+    spinner_start "Framework Routes — Rutas Críticas"
     tip "Cada framework expone rutas y archivos sensibles únicos. Este módulo los busca todos."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -2840,7 +3128,8 @@ modulo_framework_scan() {
 modulo_lfi() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
 
-    log "MÓDULO 31: LFI / Path Traversal"
+    prog_modulo 31 "LFI / Path Traversal"
+    spinner_start "LFI / Path Traversal"
     tip "LFI es crítico en PHP/Python. Con log poisoning puede escalar a RCE."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -2917,6 +3206,7 @@ modulo_lfi() {
             for pattern in "${SUCCESS_PATTERNS[@]}"; do
                 if echo "$response" | grep -q "$pattern"; then
                     warn "LFI DETECTADO: ${probe_url} → ${pattern}"
+                    prog_payload "LFI" "$payload" "${ORIGINAL_URL:-${TARGET}}"  # live progress
                     echo "LFI: ${probe_url}" >> "$out_file"
                     ((found++))
 
@@ -3019,7 +3309,8 @@ _escalate_lfi() {
 modulo_ssrf() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
 
-    log "MÓDULO 32: SSRF — Server-Side Request Forgery"
+    prog_modulo 32 "SSRF — Server-Side Request Forgery"
+    spinner_start "SSRF — Server-Side Request Forgery"
     tip "SSRF está en OWASP Top 10. Permite acceder a infraestructura interna y metadata de cloud."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -3058,6 +3349,7 @@ modulo_ssrf() {
             status=$(curl -sko /dev/null -w "%{http_code}" --max-time 8 "$probe_url" 2>/dev/null)
 
             # Detectar respuesta interna
+            prog_payload "SSRF" "$probe" "${ORIGINAL_URL:-${TARGET}}"  # live progress
             if echo "$resp" | grep -qiE "root:|bin:|localhost|127\\.0\\.0|internal|private|admin|dashboard|api|health" && [[ "$status" != "400" && "$status" != "422" ]]; then
                 warn "SSRF DETECTADO: ${probe_url}"
                 echo "SSRF: ${probe_url}" >> "$out_file"
@@ -3172,7 +3464,8 @@ modulo_ssti() {
     [[ ${#INTEL_INJECTABLE_URLS[@]} -gt 0 ]] && has_template=true
     [[ "$has_template" == "false" ]] && { warn "SSTI: sin template engine detectado. Saltando (activa con módulo custom)."; return; }
 
-    log "MÓDULO 33: SSTI — Server-Side Template Injection"
+    prog_modulo 33 "SSTI — Template Injection"
+    spinner_start "SSTI — Template Injection"
     tip "SSTI en Jinja2/Twig/Smarty/ERB = RCE. Una de las vulns más críticas."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -3209,6 +3502,7 @@ modulo_ssti() {
             resp=$(curl -skL --max-time 10 "$probe_url" 2>/dev/null)
 
             if echo "$resp" | grep -q "$EXPECTED"; then
+                prog_payload "SSTI" "$probe" "${ORIGINAL_URL:-${TARGET}}"  # live progress
                 warn "SSTI DETECTADO: ${probe} evaluado a ${EXPECTED} en ${probe_url}"
                 echo "SSTI: ${probe_url}" >> "$out_file"
                 ((found++))
@@ -3246,7 +3540,8 @@ modulo_ssti() {
 modulo_cors() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
 
-    log "MÓDULO 34: CORS Misconfiguration"
+    prog_modulo 34 "CORS — Misconfiguration"
+    spinner_start "CORS — Misconfiguration"
     tip "CORS mal configurado permite que sitios maliciosos lean respuestas API con tus cookies."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -3372,7 +3667,8 @@ POCEOF
 modulo_jwt() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
 
-    log "MÓDULO 35: JWT Analysis — alg:none, Weak Secret, Confusion"
+    prog_modulo 35 "JWT — Token Analysis"
+    spinner_start "JWT — Token Analysis"
     tip "JWT mal implementado = bypass de autenticación total. Muy frecuente en APIs."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -3544,7 +3840,8 @@ modulo_nosqli() {
         return
     }
 
-    log "MÓDULO 36: NoSQL Injection — MongoDB y APIs JSON"
+    prog_modulo 36 "NoSQLi — MongoDB Injection"
+    spinner_start "NoSQLi — MongoDB Injection"
     tip "NoSQLi es frecuente en apps Node.js+MongoDB. Bypass de login sin conocer contraseña."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -3633,7 +3930,8 @@ modulo_nosqli() {
 modulo_http_methods() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
 
-    log "MÓDULO 37: HTTP Methods + IIS/Windows Específico"
+    prog_modulo 37 "HTTP Methods — PUT/TRACE/WebDAV"
+    spinner_start "HTTP Methods — PUT/TRACE/WebDAV"
     tip "PUT/DELETE habilitados = escritura de archivos. TRACE = robo de cookies HttpOnly."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -3751,7 +4049,8 @@ modulo_http_methods() {
 
 # ─── MÓDULO 38: DOCKER / KUBERNETES / INFRA ──────────────────────
 modulo_infra_exposure() {
-    log "MÓDULO 38: Docker / Kubernetes / Infraestructura Expuesta"
+    prog_modulo 38 "Docker / K8s / Infra Expuesta"
+    spinner_start "Docker / K8s / Infra Expuesta"
     tip "Docker API en 2375 sin TLS = RCE. K8s dashboard público = cluster comprometido."
 
     local out_file="${OUTPUT_DIR}/recon/infra_exposure.txt"
@@ -3842,7 +4141,8 @@ modulo_infra_exposure() {
 modulo_xxe() {
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
 
-    log "MÓDULO 39: XXE — XML External Entity Injection"
+    prog_modulo 39 "XXE — XML External Entity"
+    spinner_start "XXE — XML External Entity"
     tip "XXE afecta parsers XML: SOAP, SVG upload, Office docs, APIs. Puede leer /etc/passwd o hacer SSRF."
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -4113,7 +4413,8 @@ modulo_iis_windows() {
         return
     fi
 
-    log "MÓDULO 41: IIS/Windows — Tests Específicos"
+    prog_modulo 41 "IIS / Windows Specific"
+    spinner_start "IIS / Windows Specific"
     tip "IIS tiene vulns únicas: ShortName 8.3, WebDAV, ViewState, NTLM exposure, trace.axd"
 
     local proto="http" port="${WEB_PORTS[0]}"
@@ -4247,7 +4548,8 @@ modulo_iis_windows() {
 # Fuentes: searchsploit local · EDB online · NVD API · GHSA API
 # ════════════════════════════════════════════════════════════════
 modulo_edb_intel() {
-    log "MÓDULO 43: Exploit Intelligence — EDB · NVD · GitHub Advisories"
+    prog_modulo 43 "EDB Intel — Exploit Intelligence"
+    spinner_start "EDB Intel — Exploit Intelligence"
     tip "Cruza el stack detectado contra exploits reales de Exploit-DB, CVEs de NVD y advisories de GitHub."
 
     local EDB_CACHE="${UPDATE_DIR}/edb_cache"
@@ -5975,7 +6277,8 @@ PYDCSYNC
     echo
 
     # Guardar intel para el reporte
-    intel_log "ADPulse: Críticos=${AD_CRITICAL} Altos=${AD_HIGH} Medios=${AD_MEDIUM} | Kerberoastable=${#AD_KERBEROASTABLE[@]} | ADCS ESC=${#AD_ADCS_TEMPLATES[@]}"
+    prog_modulo 45 "ADPulse — Active Directory Audit"
+    spinner_start "ADPulse — Active Directory Audit"
 }
 
 
@@ -8896,29 +9199,29 @@ run_full_scan() {
     log " WriestTavo v8.0 — Full Scan (44 módulos)"
     log "════════════════════════════════════════"
 
-    # ── FASE 1: Reconocimiento pasivo (sin tocar el target)
-    log "── FASE 1: Reconocimiento Pasivo ──────"
+    # ── FASE 1
+    prog_fase "FASE 1: Reconocimiento Pasivo" "1"
     modulo_crtsh
     modulo_theharvester
     modulo_dnsrecon
 
-    # ── FASE 2: Descubrimiento de infraestructura
-    log "── FASE 2: Infraestructura ─────────────"
+    # ── FASE 2
+    prog_fase "FASE 2: Infraestructura" "2"
     modulo_ttl_os
     modulo_port_scan
     modulo_version_scan
     modulo_infra_exposure     # Docker/K8s/Prometheus antes de web
 
-    # ── FASE 3: Servicios de red no-web
-    log "── FASE 3: Servicios de Red ────────────"
+    # ── FASE 3
+    prog_fase "FASE 3: Servicios de Red" "3"
     modulo_smb
     modulo_cme
     modulo_snmp
     modulo_smtp_enum
     modulo_subdominios
 
-    # ── FASE 4: Fingerprinting web (alimenta INTEL para fases 5-7)
-    log "── FASE 4: Fingerprinting Web ──────────"
+    # ── FASE 4
+    prog_fase "FASE 4: Fingerprinting Web" "4"
     modulo_waf                # INTEL_WAF_DETECTED → ajusta delay en todos
     modulo_http_headers
     modulo_sslscan
@@ -8926,8 +9229,8 @@ run_full_scan() {
     modulo_wpscan             # Solo si INTEL_CMS=wordpress
     modulo_nikto
 
-    # ── FASE 5: Escaneo profundo (usa INTEL de fase 4)
-    log "── FASE 5: Escaneo Profundo ────────────"
+    # ── FASE 5
+    prog_fase "FASE 5: Escaneo Profundo" "5"
     modulo_nuclei             # Usa INTEL_CMS, INTEL_WAF
     modulo_framework_scan     # Usa INTEL_FRAMEWORK_* para rutas críticas
     modulo_gobuster           # Usa INTEL_WORDLIST_EXTRA según CMS/tech
@@ -8935,8 +9238,8 @@ run_full_scan() {
     modulo_endpoints          # GraphQL, Swagger, API discovery
     modulo_js_analysis        # Secretos, JWTs, endpoints en bundles
 
-    # ── FASE 6: Vulnerabilidades web (usa todo el INTEL acumulado)
-    log "── FASE 6: Vulnerabilidades Web ────────"
+    # ── FASE 6
+    prog_fase "FASE 6: Vulnerabilidades Web" "6"
     modulo_sqli               # Usa INTEL_INJECTABLE_URLS, INTEL_TECHNOLOGIES
     modulo_sqlmap             # Solo si INTEL_SQLI_FOUND=true
     modulo_nosqli             # Solo si mongodb/nosql en INTEL_TECHNOLOGIES
@@ -8953,8 +9256,8 @@ run_full_scan() {
     modulo_iis_windows        # Solo si Windows/IIS detectado
     modulo_http_methods       # PUT/TRACE/IIS específico
 
-    # ── FASE 7: Post-scan y reporting
-    log "── FASE 7: Post-Scan ───────────────────"
+    # ── FASE 7
+    prog_fase "FASE 7: Post-Scan y Reporting" "7"
     modulo_adpulse        # ADPulse — AD audit si puerto 389/636/445 abierto
     modulo_edb_intel      # Exploit-DB + NVD + GHSA cruzado con el stack
     modulo_adpulse        # ADPulse — Active Directory (si puertos AD detectados)
@@ -9214,6 +9517,7 @@ main() {
     check_root
     check_deps
     init_update_system
+    prog_init  # ← Iniciar sistema de progreso en vivo
     load_custom_modules     # carga ~/.wriestTavo/modules/*.sh
     _load_custom_payloads   # carga payloads del usuario en memoria
     preparar_directorio
@@ -9246,6 +9550,7 @@ main() {
     [[ ${#INTEL_TECHNOLOGIES[@]} -gt 0 ]] && buscar_cves_stack
     _report_stack_cves
 
+    prog_final  # ← Resumen visual de progreso
     generar_reporte_html
     generar_tres_reportes
 
