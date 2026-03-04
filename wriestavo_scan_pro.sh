@@ -1600,7 +1600,7 @@ modulo_sqli() {
             local response
             prog_payload "SQLi" "$payload" "${ORIGINAL_URL:-${TARGET}}"  # live progress
             response=$(curl -skL --max-time 8 \
-                -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
                 "${test_url}" 2>/dev/null | tr '[:upper:]' '[:lower:]')
 
             for err_pattern in "${DB_ERRORS[@]}"; do
@@ -1619,7 +1619,7 @@ modulo_sqli() {
                 local start_time end_time elapsed
                 start_time=$(date +%s)
                 curl -skL --max-time 10 \
-                    -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+                    -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
                     "${test_url}" >/dev/null 2>&1
                 end_time=$(date +%s)
                 elapsed=$(( end_time - start_time ))
@@ -1677,7 +1677,7 @@ modulo_xss() {
     local findings_detail=""
 
     # Canary token único para esta sesión
-    local CANARY="WTavo$(date +%s)"
+    local CANARY="xss$(date +%s | sha256sum | head -c8)"
 
     # Payloads XSS — del más simple al más evasivo
     local XSS_PAYLOADS=(
@@ -1705,7 +1705,7 @@ modulo_xss() {
     # Extraer formularios y parámetros GET
     local page_html
     page_html=$(curl -skL --max-time 10 \
-        -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
         "${base_url}" 2>/dev/null)
 
     local page_links
@@ -1738,7 +1738,7 @@ modulo_xss() {
             local response
             response=$(curl -skL --max-time 8 \
                 prog_payload "XSS" "$payload" "${ORIGINAL_URL:-${TARGET}}"  # live progress
-                -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
                 "${test_url}" 2>/dev/null)
 
             # Verificar si el CANARY se refleja sin encoding
@@ -1983,7 +1983,7 @@ WORDLIST
     ffuf -u "${base_url}/FUZZ" \
         -w "$API_WORDLIST" \
         -mc 200,201,204,301,302,401,403,405 \
-        -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
         -H "Accept: application/json, text/html" \
         -t 30 \
         -o "${ffuf_output}" \
@@ -2102,7 +2102,7 @@ modulo_js_analysis() {
     log "Paso 1/4: Descubriendo archivos JS..."
     local page_html
     page_html=$(curl -skL --max-time 15 \
-        -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
         "${base_url}" 2>/dev/null)
 
     # Extraer todos los src de scripts
@@ -2217,7 +2217,7 @@ modulo_js_analysis() {
         echo -e "  ${C_DIM}Analizando:${C_RST} ${C_CYN}${js_url}${C_RST}"
 
         curl -skL --max-time 15 \
-            -H "User-Agent: Mozilla/5.0 (compatible; WriestTavo/2.0)" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
             "${js_url}" -o "${local_js}" 2>/dev/null
 
         [[ ! -s "$local_js" ]] && continue
@@ -3627,7 +3627,7 @@ _generate_cors_poc() {
     local poc_file="${OUTPUT_DIR}/web/cors_poc.html"
     cat > "$poc_file" << POCEOF
 <!DOCTYPE html>
-<!-- WriestTavo v8.0 — CORS PoC automático -->
+<!-- Security Audit — CORS PoC -->
 <!-- Hostear en ${evil_origin} para ejecutar el ataque -->
 <html>
 <head><title>CORS PoC — ${target_url}</title></head>
@@ -7943,7 +7943,7 @@ generar_reporte_cliente() {
 </head>
 <body>
 <div class="header">
-  <div class="header-logo">WriestTavo Security Audit v8.0</div>
+  <div class="header-logo">Security Audit Report</div>
   <h1>📋 Informe de Seguridad — Cliente IT</h1>
   <div class="header-meta">
     <span>🎯 Target: <b>${TARGET}</b></span>
@@ -8218,7 +8218,7 @@ generar_reporte_censurado() {
     Las vulnerabilidades listadas fueron identificadas durante la ventana de auditoría autorizada. No reproducir ni distribuir sin autorización.
   </div>
 </div>
-<div class="footer">WriestTavo Security Audit v8.0 · Informe Censurado · $(date '+%d/%m/%Y')</div>
+<div class="footer">Security Audit Report · Informe Censurado · $(date '+%d/%m/%Y')</div>
 </body></html>
 CENSORHTML
 
@@ -9029,7 +9029,7 @@ HTMLEOF
     cat >> "${REPORT_FILE}" << DYNEOF
 <div class="header">
   <div class="container">
-    <div class="ver">▸ WriestTavo v3.0 — Bug Bounty &amp; Pentest Scanner ◂</div>
+    <div class="ver">▸ Security Audit Scanner ◂</div>
     <h1>⚡ Security Report :: ${TARGET}</h1>
     <div class="meta">
       <div class="meta-item">Target: <span>${TARGET}</span></div>
@@ -9074,7 +9074,7 @@ DYNEOF
     cat >> "${REPORT_FILE}" << 'FOOTEOF'
   </div>
   <div class="footer">
-    <b style="color:#58a6ff">WriestTavo v3.0</b> by WRIΞSTTAV0 &nbsp;|&nbsp;
+    <b style="color:#58a6ff">Security Audit v3.0</b> &nbsp;|&nbsp;
     29 módulos &nbsp;|&nbsp; Solo con autorización explícita
   </div>
 </div>
