@@ -287,6 +287,12 @@ LAST_UPDATE_FILE="${UPDATE_DIR}/last_update.txt"
 CUSTOM_MODULES_DIR="${UPDATE_DIR}/modules"
 INTEL_EXTRA_PAYLOADS_LFI=()
 INTEL_EXTRA_PAYLOADS_SQLI=()
+# ── Tracking de evidencia para 3 reportes ────────────────────────
+EFFECTIVE_PAYLOADS=()   # "tipo|||payload|||url|||evidencia"
+ATTACK_ROUTES=()        # rutas de ataque encadenadas
+REPORT_CLIENT=""
+REPORT_CENSORED=""
+REPORT_PENTESTER=""
 INTEL_EXTRA_PAYLOADS_XSS=()
 INTEL_RECENT_CVES=()
 INTEL_TECH_CVES=()   # CVEs específicos del tech stack detectado
@@ -955,7 +961,7 @@ modulo_whatweb() {
         echo "$ww_out" | grep -qi "vercel\|now\.sh"           && INTEL_CLOUD_PROVIDER="vercel"     && intel_log "Vercel → buscar .env en build output"
         echo "$ww_out" | grep -qi "netlify"                     && INTEL_CLOUD_PROVIDER="netlify"    && intel_log "Netlify → buscar _redirects, netlify.toml"
         # ── Construir rutas específicas del framework detectado ──
-        _build_framework_routes
+        _build_framework_routes "${url:-${ORIGINAL_URL:-https://${TARGET}}}"  # FIXED: pass base_url
 
         # Elegir wordlist según CMS detectado
         case "$INTEL_CMS" in
@@ -2343,6 +2349,9 @@ modulo_dalfox() {
         local xss_count; xss_count=$(grep -c "VULN\|Injected" "${out_file}" 2>/dev/null || echo 1)
         local xss_detail; xss_detail=$(grep -iE "VULN|Injected|payload" "${out_file}" | head -20)
         INTEL_XSS_FOUND=true
+        # Registrar payload XSS confirmado por dalfox
+        local xss_payload; xss_payload=$(grep -oP '(?<=payload=)[^ ]+' "${out_file}" | head -1)
+        register_payload "XSS" "${xss_payload:-<svg onload=alert(1)>}" "${ORIGINAL_URL:-${TARGET}}" "Dalfox: ${xss_count} puntos confirmados"
         add_finding "CRÍTICO" "XSS Confirmado por Dalfox (${xss_count} puntos)" \
             "<pre>${xss_detail}</pre>" "8.2" \
             "1) Implementar CSP estricto. 2) Escapar output HTML: htmlspecialchars(). 3) Usar frameworks con auto-escaping. 4) Validar input en servidor." \
@@ -2650,7 +2659,7 @@ modulo_cme() {
 # ════════════════════════════════════════════════════════════════
 _build_framework_routes() {
     INTEL_FRAMEWORK_ROUTES=()
-    local base_url="$1"
+    local base_url="${1:-${ORIGINAL_URL:-https://${TARGET}}}"  # FIXED: default
 
     case "$INTEL_FRAMEWORK_JS" in
         nextjs)
@@ -2948,7 +2957,7 @@ modulo_lfi() {
 
 # Helper: Escalar LFI a más vectores
 _escalate_lfi() {
-    local base_url="$1"
+    local base_url="${1:-${INTEL_LFI_URL:-${ORIGINAL_URL:-https://${TARGET}}}}"  # FIXED
     local lfi_base="${INTEL_LFI_URL}"
     [[ -z "$lfi_base" ]] && return
 
@@ -3319,7 +3328,7 @@ modulo_cors() {
 }
 
 _generate_cors_poc() {
-    local target_url="$1" evil_origin="$2"
+    local target_url="${1:-${ORIGINAL_URL:-https://${TARGET}}}" evil_origin="${2:-https://evil.com}"  # FIXED
     local poc_file="${OUTPUT_DIR}/web/cors_poc.html"
     cat > "$poc_file" << POCEOF
 <!DOCTYPE html>
@@ -7355,12 +7364,8 @@ PYADREPORT
 # Reporte 3: Pentester    — Técnico completo + rutas de ataque
 # ════════════════════════════════════════════════════════════════
 
-# Variables de tracking de evidencia
-EFFECTIVE_PAYLOADS=()   # "tipo|payload|url|evidencia"
-ATTACK_ROUTES=()        # "ruta de ataque encadenada"
-REPORT_CLIENT=""        # path reporte cliente
-REPORT_CENSORED=""      # path reporte censurado
-REPORT_PENTESTER=""     # path reporte pentester
+# Variables de tracking de evidencia (inicializadas en bloque INTEL arriba)
+# EFFECTIVE_PAYLOADS / ATTACK_ROUTES / REPORT_* — ver inicialización global
 
 # ── Registrar payload efectivo (llamar desde módulos) ───────────
 register_payload() {
@@ -7749,7 +7754,7 @@ generar_reporte_censurado() {
 
     # Función de censura
     _censor() {
-        local text="$1"
+        local text="${1:-}"  # FIXED
         # Censurar IPs
         text=$(echo "$text" | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/[IP CENSURADA]/g')
         # Censurar dominios/URLs
