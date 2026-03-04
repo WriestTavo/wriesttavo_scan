@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
 # ╔══════════════════════════════════════════════════════════════╗
-# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                          ║
+# ║   WriestTavo v2.0 :: by WRIΞSTTAV0                           ║
 # ║   Bug Bounty | Pentesting | Análisis de Vulnerabilidades     ║
 # ║                                                              ║
 # ║   MÓDULOS:                                                   ║
-# ║   [1] TTL / OS Fingerprinting                               ║
-# ║   [2] Port Discovery (Fast SYN)                             ║
-# ║   [3] Service & Version Fingerprinting                      ║
-# ║   [4] Web Recon  (whatweb, nikto, gobuster)                 ║
-# ║   [5] Subdomain Enumeration  (subfinder / amass)            ║
-# ║   [6] WAF Detection  (wafw00f)                              ║
-# ║   [7] HTTP Headers Analysis                                 ║
-# ║   [8] SMB Enumeration  (enum4linux-ng)                      ║
-# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)        ║
-# ║  [10] Reporte HTML profesional                              ║
+# ║   [1] TTL / OS Fingerprinting                                ║
+# ║   [2] Port Discovery (Fast SYN)                              ║
+# ║   [3] Service & Version Fingerprinting                       ║
+# ║   [4] Web Recon  (whatweb, nikto, gobuster)                  ║
+# ║   [5] Subdomain Enumeration  (subfinder / amass)             ║
+# ║   [6] WAF Detection  (wafw00f)                               ║
+# ║   [7] HTTP Headers Analysis                                  ║
+# ║   [8] SMB Enumeration  (enum4linux-ng)                       ║
+# ║   [9] Vulnerability Scan  (nmap vuln + searchsploit)         ║
+# ║  [10] Reporte HTML profesional                               ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 set -uo pipefail
@@ -32,7 +32,34 @@ OPEN_PORTS_CSV=""
 WEB_PORTS=()
 SCAN_MODE="normal"   # normal | stealth | aggressive
 REPORT_FILE=""
-FINDINGS=()          # Array de hallazgos para el reporte
+FINDINGS=()
+
+# ─── ESTADO INTELIGENTE COMPARTIDO ──────────────────────────────
+# Cada módulo escribe aquí sus descubrimientos.
+# Módulos posteriores leen esto y ajustan su comportamiento.
+INTEL_OS=""                  # linux | windows | unknown
+INTEL_WAF_DETECTED=false     # true si hay WAF activo
+INTEL_WAF_NAME=""            # Nombre del WAF
+INTEL_CMS=""                 # wordpress | joomla | drupal | ""
+INTEL_FRAMEWORK_JS=""        # react | angular | vue | nextjs | ""
+INTEL_SERVICES=()            # "puerto:servicio:version"
+INTEL_INJECTABLE_URLS=()     # URLs con parámetros GET para SQLi/XSS
+INTEL_API_ENDPOINTS=()       # Endpoints API encontrados por JS/ffuf
+INTEL_SENSITIVE_PATHS=()     # Rutas sensibles encontradas
+INTEL_TECHNOLOGIES=()        # php, nodejs, python, java...
+INTEL_SUBDOMAINS=()          # Subdominios encontrados
+INTEL_SQLI_FOUND=false
+INTEL_XSS_FOUND=false
+INTEL_GRAPHQL_URL=""
+INTEL_SWAGGER_URL=""
+INTEL_JS_SECRETS=()
+INTEL_WORDLIST_EXTRA=""      # Wordlist específica según CMS/tech
+INTEL_SCAN_DELAY=0           # Delay entre requests (se ajusta con WAF)
+INTEL_NIKTO_FINDINGS=""
+
+intel_log() {
+    echo -e "${C_PUR}  [INTEL]${C_RST} $1"
+}
 
 trap 'echo -e "\n\n${C_YEL}[!] Abortado por el usuario.${C_RST}"; exit 1' INT
 
@@ -64,8 +91,8 @@ show_banner() {
     echo -e "${C_BLU}"
     echo "  ██████████████████████████████████████████████████████"
     echo "  █                                                    █"
-    echo "  █   WriestTavo v2.0  ::  WRIΞSTTAV0                 █"
-    echo "  █   Bug Bounty | Pentesting | Vuln Analysis         █"
+    echo "  █   WriestTavo v2.0  ::  WRIΞSTTAV0                  █"
+    echo "  █   Bug Bounty | Pentesting | Vuln Analysis          █"
     echo "  █                                                    █"
     echo "  ██████████████████████████████████████████████████████"
     echo -e "${C_RST}"
@@ -141,6 +168,12 @@ modulo_ttl_os() {
     echo -e "  ${color}OS estimado: ${os} (TTL=${ttl})${C_RST}"
     tip "TTL real puede ser distinto por saltos de red. Úsalo como referencia."
     add_finding "INFO" "OS Fingerprinting (TTL)" "TTL=${ttl} → Probable SO: ${os}"
+    # ── INTEL: guardar OS para módulos posteriores ──
+    if   (( ttl <= 64  )); then INTEL_OS="linux"
+    elif (( ttl <= 128 )); then INTEL_OS="windows"
+    else                        INTEL_OS="other"
+    fi
+    intel_log "OS detectado → ${INTEL_OS} (influye en wordlists y técnicas)"
     echo
 }
 
@@ -269,6 +302,37 @@ modulo_version_scan() {
         services=$(grep -oP 'portid="\K[^"]+|name="\K[^"]+|product="\K[^"]+|version="\K[^"]+' "${base}.xml" 2>/dev/null | paste - - - - | head -20)
         [[ -n "$services" ]] && add_finding "INFO" "Servicios Detectados" "<pre>${services}</pre>"
         xsltproc "${base}.xml" -o "${base}.html" 2>/dev/null && ok "HTML: ${base}.html"
+
+        # ── INTEL: extraer servicios y tecnologías ──
+        local nmap_txt="${base}.nmap"
+        if [[ -f "$nmap_txt" ]]; then
+            # Detectar OS real por servicios (más preciso que TTL)
+            grep -qi "microsoft\|windows\|smb\|iis" "$nmap_txt" && INTEL_OS="windows" && intel_log "OS confirmado → Windows (por servicios)"
+            grep -qi "openssh\|apache\|nginx\|ubuntu\|debian\|centos" "$nmap_txt" && INTEL_OS="linux" && intel_log "OS confirmado → Linux (por servicios)"
+
+            # Detectar tecnologías web
+            grep -qi "php" "$nmap_txt"    && INTEL_TECHNOLOGIES+=("php")    && intel_log "PHP detectado"
+            grep -qi "python\|flask\|django\|wsgi" "$nmap_txt" && INTEL_TECHNOLOGIES+=("python") && intel_log "Python detectado"
+            grep -qi "node\|express\|npm" "$nmap_txt" && INTEL_TECHNOLOGIES+=("nodejs") && intel_log "Node.js detectado"
+            grep -qi "java\|tomcat\|jboss\|spring" "$nmap_txt" && INTEL_TECHNOLOGIES+=("java") && intel_log "Java/Tomcat detectado"
+            grep -qi "iis" "$nmap_txt"   && INTEL_TECHNOLOGIES+=("iis")    && intel_log "IIS detectado → Windows server"
+            grep -qi "apache" "$nmap_txt" && INTEL_TECHNOLOGIES+=("apache") && intel_log "Apache detectado"
+            grep -qi "nginx" "$nmap_txt"  && INTEL_TECHNOLOGIES+=("nginx")  && intel_log "Nginx detectado"
+            grep -qi "mysql\|mariadb" "$nmap_txt" && INTEL_TECHNOLOGIES+=("mysql") && intel_log "MySQL detectado → probar SQLi en web"
+            grep -qi "postgresql" "$nmap_txt" && INTEL_TECHNOLOGIES+=("postgresql") && intel_log "PostgreSQL detectado"
+            grep -qi "mongodb" "$nmap_txt" && INTEL_TECHNOLOGIES+=("mongodb") && intel_log "MongoDB detectado → posible NoSQLi"
+            grep -qi "redis" "$nmap_txt"   && INTEL_TECHNOLOGIES+=("redis") && intel_log "Redis expuesto → verificar auth"
+            grep -qi "elasticsearch" "$nmap_txt" && INTEL_TECHNOLOGIES+=("elasticsearch") && intel_log "Elasticsearch → posible data exposure"
+            grep -qi "jenkins" "$nmap_txt" && INTEL_TECHNOLOGIES+=("jenkins") && add_finding "ALTO" "Jenkins Detectado" "Jenkins expuesto. Verifica autenticación y CVEs como CVE-2019-1003000."
+            grep -qi "wordpress\|wp-" "$nmap_txt" && INTEL_CMS="wordpress" && intel_log "WordPress detectado vía nmap"
+
+            # Guardar listado de servicios para searchsploit inteligente
+            while IFS= read -r svc_line; do
+                [[ -n "$svc_line" ]] && INTEL_SERVICES+=("$svc_line")
+            done < <(grep -E "^[0-9]+/tcp.*open" "$nmap_txt" 2>/dev/null | head -20)
+
+            intel_log "Servicios registrados: ${#INTEL_SERVICES[@]}"
+        fi
     fi
     echo
 }
@@ -297,9 +361,17 @@ modulo_waf() {
         warn "WAF DETECTADO: ${waf_name}"
         add_finding "MEDIO" "WAF Detectado" "${waf_name} — Ajusta tu estrategia de evasión."
         tip "Con WAF activo usa --scan-delay en nmap y wordlists más pequeñas en gobuster."
+        # ── INTEL: WAF activo → ajustar velocidad y técnicas ──
+        INTEL_WAF_DETECTED=true
+        INTEL_WAF_NAME="${waf_name}"
+        INTEL_SCAN_DELAY=500
+        intel_log "WAF activo → módulos web usarán delay ${INTEL_SCAN_DELAY}ms y headers de evasión"
+        intel_log "SQLi y XSS usarán payloads con evasión de WAF automáticamente"
     else
         ok "No se detectó WAF."
         add_finding "INFO" "WAF" "No se detectó WAF activo. El target puede ser más permisivo."
+        INTEL_WAF_DETECTED=false
+        INTEL_SCAN_DELAY=0
     fi
     echo
 }
@@ -392,6 +464,37 @@ modulo_whatweb() {
 
     if [[ -n "$ww_out" ]]; then
         add_finding "INFO" "Web Technologies (whatweb)" "<pre>${ww_out}</pre>"
+
+        # ── INTEL: detectar CMS, frameworks y tecnologías ──
+        echo "$ww_out" | grep -qi "wordpress"  && INTEL_CMS="wordpress"  && intel_log "WordPress detectado → usando wordlist WP en gobuster"
+        echo "$ww_out" | grep -qi "joomla"     && INTEL_CMS="joomla"     && intel_log "Joomla detectado → usando wordlist Joomla"
+        echo "$ww_out" | grep -qi "drupal"     && INTEL_CMS="drupal"     && intel_log "Drupal detectado → usando wordlist Drupal"
+        echo "$ww_out" | grep -qi "magento"    && INTEL_CMS="magento"    && intel_log "Magento detectado → e-commerce, buscar credenciales admin"
+        echo "$ww_out" | grep -qi "shopify"    && INTEL_CMS="shopify"    && intel_log "Shopify detectado"
+        echo "$ww_out" | grep -qi "php"        && INTEL_TECHNOLOGIES+=("php")
+        echo "$ww_out" | grep -qi "laravel"    && INTEL_TECHNOLOGIES+=("laravel") && intel_log "Laravel detectado → buscar .env, debug mode"
+        echo "$ww_out" | grep -qi "react\|next.js\|nuxt\|gatsby" && INTEL_TECHNOLOGIES+=("spa") && intel_log "SPA detectada → módulo JS analizará bundles"
+        echo "$ww_out" | grep -qi "jquery"     && INTEL_TECHNOLOGIES+=("jquery")
+        echo "$ww_out" | grep -qi "bootstrap"  && INTEL_TECHNOLOGIES+=("bootstrap")
+        echo "$ww_out" | grep -qi "x-powered-by.*asp\|asp.net" && INTEL_TECHNOLOGIES+=("aspnet") && intel_log "ASP.NET detectado → buscar viewstate, RCE payloads"
+
+        # Elegir wordlist según CMS detectado
+        case "$INTEL_CMS" in
+            wordpress)
+                [[ -f "/usr/share/seclists/Discovery/Web-Content/CMS/wordpress.fuzz.txt" ]] &&                     INTEL_WORDLIST_EXTRA="/usr/share/seclists/Discovery/Web-Content/CMS/wordpress.fuzz.txt" &&                     intel_log "Wordlist WordPress activada para gobuster"
+                add_finding "ALTO" "WordPress Detectado" "Ejecutar: <code>wpscan --url ${url} --enumerate u,p,t --api-token TU_TOKEN</code>"
+                ;;
+            joomla)
+                [[ -f "/usr/share/seclists/Discovery/Web-Content/CMS/joomla.txt" ]] &&                     INTEL_WORDLIST_EXTRA="/usr/share/seclists/Discovery/Web-Content/CMS/joomla.txt" &&                     intel_log "Wordlist Joomla activada"
+                add_finding "ALTO" "Joomla Detectado" "Ejecutar: <code>joomscan --url ${url}</code>"
+                ;;
+            drupal)
+                [[ -f "/usr/share/seclists/Discovery/Web-Content/CMS/drupal.txt" ]] &&                     INTEL_WORDLIST_EXTRA="/usr/share/seclists/Discovery/Web-Content/CMS/drupal.txt"
+                add_finding "ALTO" "Drupal Detectado" "Ejecutar: <code>droopescan scan drupal -u ${url}</code>"
+                ;;
+        esac
+
+        [[ -n "$INTEL_CMS" ]] && intel_log "CMS: ${INTEL_CMS} — gobuster y SQLi usarán rutas específicas"
     fi
     echo
 }
@@ -430,14 +533,41 @@ modulo_gobuster() {
 
     log "MÓDULO 8: Directory & File Fuzzing (gobuster)"
 
-    # Detectar wordlist disponible
+    # ── INTEL READ: ajustar según lo descubierto ──
+    # Wordlist base
     local wordlist="/usr/share/wordlists/dirb/common.txt"
     [[ -f "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt" ]] && \
         wordlist="/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"
 
+    # Si whatweb detectó un CMS, usar su wordlist específica
+    if [[ -n "$INTEL_WORDLIST_EXTRA" && -f "$INTEL_WORDLIST_EXTRA" ]]; then
+        wordlist="$INTEL_WORDLIST_EXTRA"
+        intel_log "Usando wordlist específica de ${INTEL_CMS}: ${wordlist}"
+    fi
+
     if [[ ! -f "$wordlist" ]]; then
         warn "Wordlist no encontrada. Instala: sudo apt install seclists dirb"
         return
+    fi
+
+    # Ajustar threads según WAF
+    local threads=30
+    if [[ "$INTEL_WAF_DETECTED" == "true" ]]; then
+        threads=5
+        intel_log "WAF detectado → reduciendo threads a ${threads} para evasión"
+    fi
+
+    # Extensiones según tecnología detectada
+    local extensions="php,html,txt,bak,old,zip,js,json,config,xml"
+    if [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " aspnet " ]]; then
+        extensions="asp,aspx,config,bak,txt,xml"
+        intel_log "ASP.NET detectado → usando extensiones: ${extensions}"
+    elif [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " python " ]]; then
+        extensions="py,txt,bak,zip,json,cfg,conf"
+        intel_log "Python detectado → usando extensiones: ${extensions}"
+    elif [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " nodejs " ]]; then
+        extensions="js,json,txt,bak,env,config"
+        intel_log "Node.js detectado → buscando .env y configs JS"
     fi
 
     local proto="http"
@@ -446,12 +576,12 @@ modulo_gobuster() {
     local url="${ORIGINAL_URL:-${proto}://${TARGET}:${port}}"
     local output_file="${OUTPUT_DIR}/web/gobuster_${port}.txt"
 
-    cmd_show "gobuster dir -u ${url} -w ${wordlist} -t 30 -x php,html,txt,bak,old,zip -o ${output_file} -q"
+    cmd_show "gobuster dir -u ${url} -w ${wordlist} -t ${threads} -x ${extensions} -o ${output_file} -q"
 
     gobuster dir -u "${url}" \
         -w "${wordlist}" \
-        -t 30 \
-        -x php,html,txt,bak,old,zip,js,json,config,conf,xml,asp,aspx \
+        -t "${threads}" \
+        -x "${extensions}" \
         -o "${output_file}" \
         -q \
         --no-error 2>/dev/null | tee /tmp/gobuster_live.txt
@@ -470,6 +600,20 @@ modulo_gobuster() {
         local sensitive
         sensitive=$(grep -iE "(backup|\.bak|\.old|\.zip|admin|config|\.env|passwd|shadow|\.git)" "$output_file" 2>/dev/null)
         [[ -n "$sensitive" ]] && add_finding "ALTO" "Archivos Sensibles Potenciales" "<pre>${sensitive}</pre>"
+
+        # ── INTEL WRITE: guardar rutas sensibles para otros módulos ──
+        while IFS= read -r path_line; do
+            local clean_path
+            clean_path=$(echo "$path_line" | grep -oE "^/[^ ]+" | head -1)
+            [[ -n "$clean_path" ]] && INTEL_SENSITIVE_PATHS+=("${url}${clean_path}")
+        done < <(grep -iE "admin|api|config|login|dashboard|panel|debug" "$output_file" 2>/dev/null | head -20)
+
+        # URLs con parámetros para SQLi/XSS
+        while IFS= read -r url_line; do
+            INTEL_INJECTABLE_URLS+=("${url_line}")
+        done < <(grep -E "Status: 200" "$output_file" | grep -E "\.php|\.asp" | grep -oE "^/[^ ]+" | sed "s|^|${url}|" | head -10)
+
+        intel_log "Rutas sensibles registradas para SQLi/XSS: ${#INTEL_INJECTABLE_URLS[@]}"
     fi
     echo
 }
@@ -566,6 +710,24 @@ modulo_searchsploit() {
         local exploit_count
         exploit_count=$(grep -c "Exploit Title" "$output_file" 2>/dev/null || echo "1")
         add_finding "ALTO" "Exploits Públicos Encontrados (searchsploit)" "<pre>$(head -40 "${output_file}")</pre>"
+
+        # ── INTEL READ+WRITE: búsquedas extra según tecnologías detectadas ──
+        if [[ ${#INTEL_TECHNOLOGIES[@]} -gt 0 ]]; then
+            intel_log "Buscando exploits adicionales para: ${INTEL_TECHNOLOGIES[*]}"
+            local extra_file="${OUTPUT_DIR}/exploits/searchsploit_extra.txt"
+            for tech in "${INTEL_TECHNOLOGIES[@]}"; do
+                echo "=== ${tech} ===" >> "$extra_file"
+                searchsploit "$tech" 2>/dev/null | grep -iE "rce|exec|inject|upload|auth bypass|lfi|rfi|sqli" | head -10 >> "$extra_file"
+            done
+            if [[ -s "$extra_file" ]]; then
+                add_finding "ALTO" "Exploits por Tecnología Detectada (${INTEL_TECHNOLOGIES[*]})" "<pre>$(head -50 "${extra_file}")</pre>"
+            fi
+        fi
+
+        # Si SQLi fue encontrado, buscar exploits de la BD
+        if [[ "$INTEL_SQLI_FOUND" == "true" ]]; then
+            intel_log "SQLi confirmado → buscando exploits de escalada via ${db_type:-sql}"
+        fi
     fi
     echo
 }
@@ -585,7 +747,24 @@ modulo_sqli() {
     local vuln_count=0
     local findings_detail=""
 
-    # Payloads básicos de detección
+    # ── INTEL READ: adaptar SQLi según contexto ──
+    if [[ "$INTEL_WAF_DETECTED" == "true" ]]; then
+        intel_log "WAF detectado (${INTEL_WAF_NAME}) → añadiendo payloads con evasión WAF"
+        tip "WAF activo: se usan payloads con comentarios SQL, case mixing y codificación"
+    fi
+
+    # Si gobuster encontró rutas con PHP/ASP, agregarlas como targets
+    if [[ ${#INTEL_INJECTABLE_URLS[@]} -gt 0 ]]; then
+        intel_log "Usando ${#INTEL_INJECTABLE_URLS[@]} URLs encontradas por gobuster como targets adicionales"
+    fi
+
+    # Si MySQL detectado por nmap, priorizar payloads MySQL
+    local db_type="generic"
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " mysql " ]]      && db_type="mysql"      && intel_log "MySQL confirmado → priorizando payloads MySQL/MariaDB"
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " postgresql " ]] && db_type="postgresql" && intel_log "PostgreSQL confirmado → usando payloads PG"
+    [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " aspnet " ]]     && db_type="mssql"      && intel_log "ASP.NET → posible MSSQL, usando payloads MSSQL"
+
+    # Payloads base + evasión WAF si aplica
     local PAYLOADS=(
         "'"
         "'--"
@@ -690,8 +869,17 @@ modulo_sqli() {
 
     echo
     if (( vuln_count > 0 )); then
+        INTEL_SQLI_FOUND=true
+        # Construir comando sqlmap inteligente basado en tecnología detectada
+        local sqlmap_extra=""
+        [[ "$db_type" == "mysql" ]]      && sqlmap_extra="--dbms=mysql"
+        [[ "$db_type" == "postgresql" ]] && sqlmap_extra="--dbms=postgresql"
+        [[ "$db_type" == "mssql" ]]      && sqlmap_extra="--dbms=mssql"
+        [[ "$INTEL_WAF_DETECTED" == "true" ]] && sqlmap_extra+=" --tamper=between,charencode,randomcase --level=5 --risk=3"
+
         add_finding "CRÍTICO" "SQL Injection — ${vuln_count} Indicios Encontrados" \
-            "<table class='vuln-table'><tr><th>Tipo</th><th>URL</th><th>Payload</th><th>Trigger</th></tr>${findings_detail}</table><br><b>Siguiente paso:</b> Confirmar con <code>sqlmap -u \"URL\" --dbs</code>"
+            "<table class='vuln-table'><tr><th>Tipo</th><th>URL</th><th>Payload</th><th>Trigger</th></tr>${findings_detail}</table><br><b>Siguiente paso recomendado:</b><br><code>sqlmap -u "URL_VULNERABLE" --dbs --batch ${sqlmap_extra}</code>"
+        intel_log "SQLi confirmado → XSS usará estas URLs también | searchsploit buscará exploits de ${db_type}"
     else
         ok "No se detectaron indicios obvios de SQLi básico."
         add_finding "INFO" "SQL Injection" "No se detectaron errores de BD con payloads básicos. Recomienda: sqlmap completo."
@@ -1087,6 +1275,9 @@ WORDLIST
         if echo "$gql_resp" | grep -qiE "__typename|data|graphql|errors"; then
             warn "GraphQL DETECTADO: ${gql_url}"
             gql_found+="${gql_url}\n"
+            INTEL_GRAPHQL_URL="${gql_url}"
+            INTEL_API_ENDPOINTS+=("${gql_url}")
+            intel_log "GraphQL guardado → SQLi/XSS intentarán inyección en queries GraphQL"
             add_finding "ALTO" "GraphQL Endpoint Detectado" \
                 "URL: <b>${gql_url}</b><br>Respuesta sugiere GraphQL activo.<br><b>Siguiente paso:</b> graphql-cop -t ${gql_url} o InQL en Burp."
         fi
@@ -1102,8 +1293,10 @@ WORDLIST
         sw_status=$(curl -sko /dev/null --max-time 5 -w "%{http_code}" "${sw_url}" 2>/dev/null)
         if [[ "$sw_status" == "200" ]]; then
             ok "Swagger/OpenAPI encontrado: ${sw_url}"
+            INTEL_SWAGGER_URL="${sw_url}"
+            intel_log "Swagger expuesto → parseando endpoints para SQLi/XSS"
             add_finding "ALTO" "Swagger/API Docs Expuestos Públicamente" \
-                "URL: <b>${sw_url}</b><br>Los API docs expuestos revelan todos los endpoints, parámetros y modelos de datos.<br><b>Impacto:</b> Facilita reconocimiento completo de la API."
+                "URL: <b>${sw_url}</b><br>Los API docs expuestos revelan todos los endpoints.<br><b>Extraer endpoints:</b> <code>curl -s ${sw_url} | jq -r \'.paths | keys[]\' 2>/dev/null</code>"
         fi
     done
     echo
@@ -1349,6 +1542,14 @@ modulo_js_analysis() {
     if [[ -n "$endpoints_report" ]]; then
         add_finding "MEDIO" "Endpoints Extraídos de Archivos JS" \
             "${endpoints_report}<br><b>Tip:</b> Prueba estos endpoints directamente con curl o Burp Suite."
+
+        # ── INTEL WRITE: registrar endpoints para SQLi/XSS ──
+        local js_dir_local="${OUTPUT_DIR}/web/js_analysis"
+        while IFS= read -r ep; do
+            [[ "$ep" == /api/* || "$ep" == /v[0-9]/* ]] && INTEL_API_ENDPOINTS+=("${base_url}${ep}")
+        done < <(find "${js_dir_local}" -name "*.txt" -exec grep -ohE "/[a-zA-Z0-9/_-]{3,60}" {} \; 2>/dev/null | sort -u | head -30)
+
+        intel_log "Endpoints de JS registrados para pruebas: ${#INTEL_API_ENDPOINTS[@]}"
     fi
 
     ok "Archivos JS descargados en: ${js_dir}/"
@@ -1358,6 +1559,24 @@ modulo_js_analysis() {
 # ─── REPORTE HTML PROFESIONAL ────────────────────────────────────
 generar_reporte_html() {
     log "Generando Reporte HTML Profesional..."
+
+    # ── INTEL SUMMARY: construir resumen de lo aprendido ──
+    local intel_summary_html=""
+    intel_summary_html+="<div class='intel-box'>"
+    intel_summary_html+="<h3>🧠 Contexto Acumulado (INTEL)</h3>"
+    intel_summary_html+="<div class='intel-grid'>"
+    [[ -n "$INTEL_OS" ]]           && intel_summary_html+="<div class='intel-item'><span class='intel-label'>OS</span><span class='intel-val'>${INTEL_OS}</span></div>"
+    [[ -n "$INTEL_CMS" ]]          && intel_summary_html+="<div class='intel-item'><span class='intel-label'>CMS</span><span class='intel-val'>${INTEL_CMS}</span></div>"
+    [[ -n "$INTEL_FRAMEWORK_JS" ]] && intel_summary_html+="<div class='intel-item'><span class='intel-label'>Framework JS</span><span class='intel-val'>${INTEL_FRAMEWORK_JS}</span></div>"
+    intel_summary_html+="<div class='intel-item'><span class='intel-label'>WAF</span><span class='intel-val'>$([ "$INTEL_WAF_DETECTED" = "true" ] && echo "${INTEL_WAF_NAME}" || echo "No detectado")</span></div>"
+    [[ ${#INTEL_TECHNOLOGIES[@]} -gt 0 ]] && intel_summary_html+="<div class='intel-item'><span class='intel-label'>Tecnologías</span><span class='intel-val'>${INTEL_TECHNOLOGIES[*]}</span></div>"
+    [[ ${#INTEL_API_ENDPOINTS[@]} -gt 0 ]] && intel_summary_html+="<div class='intel-item'><span class='intel-label'>API Endpoints</span><span class='intel-val'>${#INTEL_API_ENDPOINTS[@]} encontrados</span></div>"
+    [[ ${#INTEL_SERVICES[@]} -gt 0 ]]     && intel_summary_html+="<div class='intel-item'><span class='intel-label'>Servicios</span><span class='intel-val'>${#INTEL_SERVICES[@]} detectados</span></div>"
+    intel_summary_html+="<div class='intel-item'><span class='intel-label'>SQLi</span><span class='intel-val'>$([ "$INTEL_SQLI_FOUND" = "true" ] && echo "CONFIRMADO ⚠" || echo "No detectado")</span></div>"
+    intel_summary_html+="<div class='intel-item'><span class='intel-label'>XSS</span><span class='intel-val'>$([ "$INTEL_XSS_FOUND" = "true" ] && echo "CONFIRMADO ⚠" || echo "No detectado")</span></div>"
+    [[ -n "$INTEL_GRAPHQL_URL" ]]  && intel_summary_html+="<div class='intel-item'><span class='intel-label'>GraphQL</span><span class='intel-val'>${INTEL_GRAPHQL_URL}</span></div>"
+    [[ -n "$INTEL_SWAGGER_URL" ]]  && intel_summary_html+="<div class='intel-item'><span class='intel-label'>Swagger</span><span class='intel-val'>${INTEL_SWAGGER_URL}</span></div>"
+    intel_summary_html+="</div></div>"
 
     local critical_count=0 high_count=0 medium_count=0 low_count=0 info_count=0
     local findings_html=""
@@ -1435,6 +1654,13 @@ generar_reporte_html() {
         .file-item a:hover { text-decoration: underline; }
         
         .footer { text-align: center; padding: 20px; color: #484f58; font-size: 12px; margin-top: 40px; border-top: 1px solid #21262d; }
+        /* Intel Summary Box */
+        .intel-box { background: #0d1117; border: 1px solid #1f6feb; border-radius: 8px; padding: 16px 20px; margin: 20px 0; }
+        .intel-box h3 { color: #58a6ff; margin-bottom: 12px; font-size: 16px; }
+        .intel-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+        .intel-item { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; font-size: 13px; }
+        .intel-label { color: #8b949e; margin-right: 6px; }
+        .intel-val { color: #e6edf3; font-weight: 600; }
         
         /* Vuln Tables */
         .vuln-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
@@ -1465,6 +1691,7 @@ generar_reporte_html() {
 </div>
 
 <div class="container">
+    ${intel_summary_html}
     <h2 class="section-title">📊 Resumen Ejecutivo</h2>
     <div class="summary">
         <div class="card critical"><div class="count">${critical_count}</div><div class="label">Crítico</div></div>
