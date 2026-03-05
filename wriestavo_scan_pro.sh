@@ -20,9 +20,10 @@
 set -uo pipefail
 
 # ─── COLORES ────────────────────────────────────────────────────
-C_RST="\e[0m";   C_RED="\e[31m";   C_GRN="\e[32m"
-C_YEL="\e[33m";  C_BLU="\e[34m";   C_CYN="\e[36m"
-C_PUR="\e[35m";  C_BOLD="\e[1m";   C_DIM="\e[2m"
+# Colores ANSI — compatibles con echo, printf y variables
+C_RST=$'\033[0m';  C_RED=$'\033[31m'; C_GRN=$'\033[32m'
+C_YEL=$'\033[33m'; C_BLU=$'\033[34m'; C_CYN=$'\033[36m'
+C_PUR=$'\033[35m'; C_BOLD=$'\033[1m';  C_DIM=$'\033[2m'
 
 # ─── CONFIGURACIÓN GLOBAL ───────────────────────────────────────
 TARGET=""
@@ -30,6 +31,13 @@ OUTPUT_DIR="wriestTavo_results"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OPEN_PORTS_CSV=""
 WEB_PORTS=()
+SESSION_FILE=""
+SESSION_LOADED=false
+# ── Pipeline de port scanning progresivo ─────────────
+WAVE2_PID=0;      WAVE3_PID=0
+WAVE2_FILE="";    WAVE3_FILE=""
+PORTS_WAVE1=();   PORTS_WAVE2=();  PORTS_WAVE3=()
+PORTS_VERSION_DONE=()   # puertos ya procesados por version scan
 SCAN_MODE="normal"   # normal | stealth | aggressive
 REPORT_FILE=""
 FINDINGS=()
@@ -179,6 +187,11 @@ add_finding() {
             *)         remediation="Documentar y evaluar según política interna." ;;
         esac
     fi
+    # Deduplicar: no agregar si ya existe mismo título+severidad
+    local _dedup_key="${sev}|||${title}"
+    local _e; for _e in "${FINDINGS[@]:-}"; do
+        [[ "$_e" == "${_dedup_key}|||"* ]] && return
+    done
     FINDINGS+=("${sev}|||${title}|||${detail}|||${cvss}|||${remediation}|||${next_step}")
     # Notificar hallazgo en vivo al sistema de progreso
     case "$sev" in
@@ -195,10 +208,10 @@ is_web_port() {
     [[ "$p" == "80" || "$p" == "443" || "$p" == "8080" || "$p" == "8443" || "$p" == "8000" || "$p" == "8888" || "$p" == "8888" || "$p" == "3000" || "$p" == "5000" ]]
 }
 
-# ═════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # SISTEMA DE PROGRESO EN VIVO v2.0
 # Muestra barra, spinner, módulo actual, tiempo y payloads en tiempo real
-# ═════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 
 # ── Variables de estado de progreso ─────────────────────────────
 PROG_TOTAL=45          # total módulos a ejecutar
@@ -262,7 +275,7 @@ _draw_progress_bar() {
     (( pct >= 30 && pct < 70 )) && bar_color="$C_CYN"
     (( pct >= 70 )) && bar_color="$C_GRN"
     # Construir barra
-    bar="${bar_color}"
+    local bar="${bar_color}"
     local i
     for (( i=0; i<filled; i++ )); do bar+="█"; done
     for (( i=0; i<empty;  i++ )); do bar+="░"; done
@@ -368,10 +381,13 @@ _spinner_loop() {
 
 spinner_start() {
     local msg="${1:-Trabajando...}"
-    _spinner_stop  # Detener spinner previo si hay uno
+    # Matar spinner previo si quedó huérfano
+    [[ ${PROG_SPINNER_PID:-0} -gt 0 ]] && kill "$PROG_SPINNER_PID" 2>/dev/null
+    _SPINNER_PID=0; PROG_SPINNER_PID=0
     _spinner_loop "$msg" &
     PROG_SPINNER_PID=$!
-    disown "$PROG_SPINNER_PID" 2>/dev/null || true
+    _SPINNER_PID=$PROG_SPINNER_PID
+    # Sin disown — el trap EXIT necesita poder matarlo
 }
 
 _spinner_stop() {
@@ -450,6 +466,323 @@ run_with_spinner() {
     return $exit_code
 }
 
+
+# ════════════════════════════════════════════════════════════════
+# SISTEMA DE SESIÓN PERSISTENTE — .wtsession
+#
+#  Genera: target_fecha.wtsession  (bash sourceable + JSON embed)
+#  Carga:  --session archivo.wtsession
+#
+#  Ciclo de vida:
+#    Scan 1 → genera diablos.com.mx_20260304.wtsession
+#    Scan 2 → --session diablos.com.mx_20260304.wtsession
+#             → carga todo, salta lo conocido, prioriza payloads
+#             → al terminar actualiza el mismo archivo
+# ════════════════════════════════════════════════════════════════
+
+SESSION_FILE=""           # path al .wtsession activo
+SESSION_LOADED=false      # true si cargamos una sesión previa
+SESSION_SKIP_MODULES=()   # módulos a saltarse (ya tienen resultado)
+SESSION_NEW_FINDINGS=0    # hallazgos nuevos vs sesión anterior
+
+# ── Variables que se RESTAURAN desde sesión ──────────────────────
+# (se inicializan vacías, se llenan con session_load si hay archivo)
+SES_PREV_PORTS=""
+SES_PREV_STACK=()
+SES_PREV_VULNS=()
+SES_PREV_PARAMS=()
+SES_PREV_FINDINGS_COUNT=0
+SES_PRIORITY_SQLI=()
+SES_PRIORITY_XSS=()
+SES_PRIORITY_LFI=()
+SES_PRIORITY_SSRF=()
+SES_PREV_SUBDOMAINS=()
+SES_PREV_HEADERS=()
+SES_PREV_WAF=""
+SES_PREV_OS=""
+SES_PREV_SSL_OK=false
+SES_SCAN_COUNT=0
+
+# ════════════════════════════════════════════════════════════════
+# CARGAR SESIÓN PREVIA
+# ════════════════════════════════════════════════════════════════
+session_load() {
+    local ses_file="$1"
+    [[ ! -f "$ses_file" ]] && { warn "Sesión no encontrada: $ses_file"; return 1; }
+
+    SESSION_FILE="$ses_file"
+
+    # ── Validar que la sesión corresponde al target actual ───────
+    local ses_target
+    ses_target=$(grep '^SES_TARGET=' "$ses_file" | head -1 | cut -d'"' -f2)
+    if [[ -n "$ses_target" && -n "$TARGET" && "$ses_target" != "$TARGET" ]]; then
+        echo -e "  ${C_YEL}[!] ADVERTENCIA: Sesión es de '${ses_target}' pero target actual es '${TARGET}'${C_RST}"
+        echo -ne "  ${C_YEL}¿Continuar de todas formas? [s/N]: ${C_RST}"
+        read -r confirm
+        if [[ ! "${confirm,,}" =~ ^(s|si|y|yes)$ ]]; then
+            warn "Sesión cancelada. Iniciando scan limpio."
+            SESSION_FILE=""
+            return 1
+        fi
+        warn "Cargando sesión de target diferente (${ses_target}) → datos pueden ser inexactos"
+    fi
+
+    SESSION_LOADED=true
+
+    echo
+    echo -e "  ${C_PUR}╔══════════════════════════════════════════════════════╗${C_RST}"
+    echo -e "  ${C_PUR}║  📂 CARGANDO SESIÓN PREVIA                          ║${C_RST}"
+    echo -e "  ${C_PUR}║  ${ses_file##*/}$(printf '%*s' $((51 - ${#ses_file##*/})) '')║${C_RST}"
+    echo -e "  ${C_PUR}╚══════════════════════════════════════════════════════╝${C_RST}"
+
+    # La sesión es un bash script sourceable — cargar variables
+    source "$ses_file" 2>/dev/null || { warn "Error leyendo sesión"; return 1; }
+
+    # Validar que el target de la sesión coincide con el target actual
+    if [[ -n "$SES_TARGET" && "$SES_TARGET" != "$TARGET" ]]; then
+        warn "⚠️  SESIÓN de target diferente: sesión=${SES_TARGET}, actual=${TARGET}"
+        warn "   Cargando datos de contexto (ports/stack) pero ignorando payloads específicos"
+        SES_PRIORITY_SQLI=(); SES_PRIORITY_XSS=(); SES_PRIORITY_LFI=(); SES_PRIORITY_SSRF=()
+    fi
+
+    # Las variables SES_* ya están cargadas por el source
+    # Ahora aplicarlas al INTEL actual
+
+    # ── Restaurar puertos conocidos ──────────────────────────────
+    if [[ -n "$SES_PREV_PORTS" ]]; then
+        OPEN_PORTS_CSV="$SES_PREV_PORTS"
+        intel_log "Sesión: puertos conocidos → ${OPEN_PORTS_CSV}"
+        ok "Puertos restaurados: ${C_YEL}${OPEN_PORTS_CSV}${C_RST} ${C_DIM}(de sesión previa — Wave 1 confirmará cambios)${C_RST}"
+    fi
+
+    # ── Restaurar stack tecnológico ──────────────────────────────
+    if [[ ${#SES_PREV_STACK[@]} -gt 0 ]]; then
+        for t in "${SES_PREV_STACK[@]}"; do
+            [[ -n "$t" ]] && INTEL_TECHNOLOGIES+=("$t")
+        done
+        intel_log "Sesión: stack conocido → ${SES_PREV_STACK[*]}"
+    fi
+
+    # ── Restaurar OS, WAF ────────────────────────────────────────
+    [[ -n "$SES_PREV_OS"  ]] && INTEL_OS="$SES_PREV_OS"
+    [[ -n "$SES_PREV_WAF" ]] && { INTEL_WAF_DETECTED=true; INTEL_WAF_NAME="$SES_PREV_WAF"; }
+
+    # ── Priorizar payloads exitosos (van al INICIO de la cola) ───
+    if [[ ${#SES_PRIORITY_SQLI[@]} -gt 0 ]]; then
+        INTEL_EXTRA_PAYLOADS_SQLI=("${SES_PRIORITY_SQLI[@]}" "${INTEL_EXTRA_PAYLOADS_SQLI[@]}")
+        ok "Payloads SQLi exitosos previos: ${C_YEL}${#SES_PRIORITY_SQLI[@]}${C_RST} → al frente de la cola"
+    fi
+    if [[ ${#SES_PRIORITY_XSS[@]} -gt 0 ]]; then
+        INTEL_EXTRA_PAYLOADS_XSS=("${SES_PRIORITY_XSS[@]}" "${INTEL_EXTRA_PAYLOADS_XSS[@]}")
+        ok "Payloads XSS exitosos previos: ${C_YEL}${#SES_PRIORITY_XSS[@]}${C_RST} → al frente"
+    fi
+    if [[ ${#SES_PRIORITY_LFI[@]} -gt 0 ]]; then
+        INTEL_EXTRA_PAYLOADS_LFI=("${SES_PRIORITY_LFI[@]}" "${INTEL_EXTRA_PAYLOADS_LFI[@]}")
+        ok "Payloads LFI exitosos previos: ${C_YEL}${#SES_PRIORITY_LFI[@]}${C_RST} → al frente"
+    fi
+    if [[ ${#SES_PRIORITY_SSRF[@]} -gt 0 ]]; then
+        INTEL_EXTRA_PAYLOADS_SSRF=("${SES_PRIORITY_SSRF[@]}" "${INTEL_EXTRA_PAYLOADS_SSRF[@]}")
+        ok "Payloads SSRF exitosos previos: ${C_YEL}${#SES_PRIORITY_SSRF[@]}${C_RST} → al frente"
+    fi
+
+    # ── Determinar qué módulos SALTAR (ya tenemos resultado) ────
+    _session_calc_skip_modules
+
+    # Mostrar resumen de lo que sabemos vs lo que es nuevo
+    echo
+    echo -e "  ${C_DIM}┄ Sesión #${SES_SCAN_COUNT} — ${SES_PREV_FINDINGS_COUNT} hallazgos previos conocidos ┄${C_RST}"
+    if [[ ${#SES_PREV_VULNS[@]} -gt 0 ]]; then
+        echo -e "  ${C_RED}  Vulns confirmadas en scans anteriores: ${SES_PREV_VULNS[*]}${C_RST}"
+    fi
+    echo
+}
+
+# ── Calcular qué módulos saltarse ─────────────────────────────────
+_session_calc_skip_modules() {
+    SESSION_SKIP_MODULES=()
+
+    # Si el SSL no cambió y fue OK, saltarlo
+    [[ "$SES_PREV_SSL_OK" == "true" ]] && SESSION_SKIP_MODULES+=("sslscan")
+
+    # Si conocemos los subdominios y no han pasado más de 7 días, saltar crt.sh
+    if [[ ${#SES_PREV_SUBDOMAINS[@]} -gt 0 ]]; then
+        # TODO: comparar fecha — por ahora siempre re-escanea subdominios
+        : # SESSION_SKIP_MODULES+=("crtsh")
+    fi
+
+    if [[ ${#SESSION_SKIP_MODULES[@]} -gt 0 ]]; then
+        intel_log "Sesión: módulos que se acelerarán por datos previos: ${SESSION_SKIP_MODULES[*]}"
+    fi
+}
+
+# ── Verificar si un módulo debe saltarse ─────────────────────────
+session_should_skip() {
+    local modulo="$1"
+    for m in "${SESSION_SKIP_MODULES[@]}"; do
+        [[ "$m" == "$modulo" ]] && return 0  # 0 = true en bash
+    done
+    return 1  # 1 = false
+}
+
+# ════════════════════════════════════════════════════════════════
+# GUARDAR SESIÓN AL TERMINAR
+# ════════════════════════════════════════════════════════════════
+session_save() {
+    local outdir="${OUTPUT_DIR:-wriestTavo_results}"
+    local ts; ts=$(date +%Y%m%d_%H%M%S)
+    local safe_target; safe_target=$(echo "$TARGET" | tr '/:.' '_' | tr -cd '[:alnum:]_-')
+    local ses_path="${outdir}/${safe_target}.wtsession"
+
+    # Si cargamos una sesión previa, actualizar ESE mismo archivo
+    [[ "$SESSION_LOADED" == "true" && -n "$SESSION_FILE" ]] && ses_path="$SESSION_FILE"
+
+    local new_scan_num=$(( SES_SCAN_COUNT + 1 ))
+
+    # ── Recolectar payloads exitosos de este scan ────────────────
+    local eff_sqli=() eff_xss=() eff_lfi=() eff_ssrf=()
+    for entry in "${EFFECTIVE_PAYLOADS[@]}"; do
+        local tipo payload
+        IFS='|||' read -r tipo payload _ _ <<< "$entry"
+        case "${tipo,,}" in
+            sqli) eff_sqli+=("$payload") ;;
+            xss)  eff_xss+=("$payload")  ;;
+            lfi)  eff_lfi+=("$payload")  ;;
+            ssrf) eff_ssrf+=("$payload") ;;
+        esac
+    done
+
+    # ── Merge con payloads previos (sesión cargada) ──────────────
+    # Los nuevos van al frente (más relevantes), eliminar duplicados
+    local merged_sqli=(); _merge_arrays merged_sqli eff_sqli[@] SES_PRIORITY_SQLI[@]
+    local merged_xss=();  _merge_arrays merged_xss  eff_xss[@]  SES_PRIORITY_XSS[@]
+    local merged_lfi=();  _merge_arrays merged_lfi  eff_lfi[@]  SES_PRIORITY_LFI[@]
+    local merged_ssrf=(); _merge_arrays merged_ssrf eff_ssrf[@] SES_PRIORITY_SSRF[@]
+
+    # ── Vulns acumuladas ─────────────────────────────────────────
+    local vulns_this=()
+    [[ "$INTEL_SQLI_FOUND"  == "true" ]] && vulns_this+=("SQLi")
+    [[ "$INTEL_XSS_FOUND"   == "true" ]] && vulns_this+=("XSS")
+    [[ "$INTEL_LFI_FOUND"   == "true" ]] && vulns_this+=("LFI")
+    [[ "$INTEL_SSRF_FOUND"  == "true" ]] && vulns_this+=("SSRF")
+    [[ "$INTEL_SSTI_FOUND"  == "true" ]] && vulns_this+=("SSTI")
+    [[ "$INTEL_CORS_VULN"   == "true" ]] && vulns_this+=("CORS")
+    [[ "$INTEL_XXE_FOUND"   == "true" ]] && vulns_this+=("XXE")
+    [[ "$INTEL_IDOR_FOUND"  == "true" ]] && vulns_this+=("IDOR")
+    # Merge con vulns previas
+    local all_vulns=("${vulns_this[@]}" "${SES_PREV_VULNS[@]}")
+    IFS=$'\n' read -r -d '' -a all_vulns < <(printf '%s\n' "${all_vulns[@]}" | sort -u && printf '\0')
+
+    local total_findings=${#FINDINGS[@]}
+
+    # ── Escribir el archivo .wtsession ───────────────────────────
+    cat > "$ses_path" << SESFILE
+#!/usr/bin/env bash
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  WriestTavo Session File — usar con: --session este_archivo  ║
+# ║  Target  : ${TARGET}                                         
+# ║  Scan #  : ${new_scan_num}                                   
+# ║  Fecha   : $(date '+%Y-%m-%d %H:%M')                        
+# ║  Hallazgos acumulados: ${total_findings}                     
+# ╚══════════════════════════════════════════════════════════════╝
+# NO editar manualmente — se regenera automáticamente en cada scan
+
+# ── Metadata ─────────────────────────────────────────────────────
+SES_TARGET="${TARGET}"
+SES_SCAN_COUNT=${new_scan_num}
+SES_LAST_SCAN="$(date '+%Y-%m-%d %H:%M')"
+SES_FIRST_SCAN="${SES_FIRST_SCAN:-$(date '+%Y-%m-%d')}"
+SES_PREV_FINDINGS_COUNT=${total_findings}
+
+# ── Infraestructura ───────────────────────────────────────────────
+SES_PREV_PORTS="${OPEN_PORTS_CSV}"
+SES_PREV_OS="${INTEL_OS}"
+SES_PREV_WAF="${INTEL_WAF_NAME}"
+SES_PREV_SSL_OK="${SES_PREV_SSL_OK:-false}"
+
+# ── Arrays — escritura segura con python3 (escapa comillas y chars especiales)
+_write_bash_array() {
+    # _write_bash_array VARNAME item1 item2 ...
+    local varname="$1"; shift
+    printf '%s=(' "$varname"
+    for item in "$@"; do
+        # Escapar comillas simples en el item
+        local escaped="${item//\'/\'\\\'\'}"
+        printf " '%s'" "$escaped"
+    done
+    printf ')\n'
+}
+$(_write_bash_array SES_PREV_STACK     "${INTEL_TECHNOLOGIES[@]}")
+$(_write_bash_array SES_PREV_VULNS     "${all_vulns[@]}")
+$(_write_bash_array SES_PREV_PARAMS    "${INTEL_INJECTABLE_URLS[@]:0:20}")
+$(_write_bash_array SES_PREV_SUBDOMAINS "${INTEL_SUBDOMAINS[@]:0:50}")
+$(_write_bash_array SES_PRIORITY_SQLI  "${merged_sqli[@]:0:15}")
+$(_write_bash_array SES_PRIORITY_XSS   "${merged_xss[@]:0:15}")
+$(_write_bash_array SES_PRIORITY_LFI   "${merged_lfi[@]:0:15}")
+$(_write_bash_array SES_PRIORITY_SSRF  "${merged_ssrf[@]:0:15}")
+$(_write_bash_array SES_PREV_ENDPOINTS "${INTEL_API_ENDPOINTS[@]:0:30}")
+$(_write_bash_array SES_PREV_SENSITIVE "${INTEL_SENSITIVE_PATHS[@]:0:20}")
+
+# ── Historial de hallazgos ────────────────────────────────────────
+# $(date '+%Y-%m-%d %H:%M') | scan #${new_scan_num} | ${#vulns_this[@]} vulns | ${total_findings} hallazgos
+# $([ "$SESSION_LOADED" == "true" ] && grep '^#.*scan #' "$SESSION_FILE" 2>/dev/null | tail -5)
+SESFILE
+
+    chmod +x "$ses_path"
+
+    # ── Mostrar en pantalla ───────────────────────────────────────
+    echo
+    echo -e "  ${C_PUR}┌──────────────────────────────────────────────────────┐${C_RST}"
+    echo -e "  ${C_PUR}│  💾 SESIÓN GUARDADA                                  │${C_RST}"
+    echo -e "  ${C_PUR}│  ${ses_path##*/}$(printf '%*s' $((53 - ${#ses_path##*/})) '')│${C_RST}"
+    echo -e "  ${C_PUR}│  Scan #${new_scan_num} | Vulns: ${all_vulns[*]} $(printf '%*s' $((35 - ${#all_vulns[*]})) '')│${C_RST}"
+    echo -e "  ${C_PUR}│                                                      │${C_RST}"
+    echo -e "  ${C_PUR}│  Próximo scan:                                       │${C_RST}"
+    echo -e "  ${C_PUR}│  ${C_YEL}sudo ./wriestTavo.sh --session ${ses_path##*/}${C_RST}$(printf '%*s' $((18 - ${#ses_path##*/})) '')${C_PUR}│${C_RST}"
+    echo -e "  ${C_PUR}└──────────────────────────────────────────────────────┘${C_RST}"
+
+    SESSION_FILE="$ses_path"
+}
+
+# ── Merge dos arrays sin duplicados ──────────────────────────────
+_merge_arrays() {
+    local result_var="$1" a_name="$2" b_name="$3"
+    local seen=() merged=()
+    # bash 3.x compatible — sin nameref
+    local item
+    while IFS= read -r item; do
+        [[ -z "$item" ]] && continue
+        local dup=false
+        local s; for s in "${seen[@]:-}"; do [[ "$s" == "$item" ]] && dup=true && break; done
+        $dup || { seen+=("$item"); merged+=("$item"); }
+    done < <(eval "printf '%s
+' "\${${a_name}[@]:-}" "\${${b_name}[@]:-}"" 2>/dev/null)
+    eval "${result_var}=("\${merged[@]:-}")"
+}
+
+
+# ─── TRAP: limpieza al interrumpir ──────────────────────────────
+_cleanup_on_exit() {
+    local exit_code=$?
+    # Matar procesos background de waves si siguen vivos
+    [[ ${WAVE2_PID:-0} -gt 0 ]] && kill "$WAVE2_PID" 2>/dev/null && wait "$WAVE2_PID" 2>/dev/null
+    [[ ${WAVE3_PID:-0} -gt 0 ]] && kill "$WAVE3_PID" 2>/dev/null && wait "$WAVE3_PID" 2>/dev/null
+    # Matar spinner si sigue vivo
+    [[ ${_SPINNER_PID:-0} -gt 0 ]] && kill "$_SPINNER_PID" 2>/dev/null
+    # Restaurar cursor si estaba oculto
+    tput cnorm 2>/dev/null || true
+    printf "
+[K" 2>/dev/null || true
+    # Guardar sesión parcial si el scan llegó al menos a Fase 2
+    if [[ -n "$TARGET" && -n "$OPEN_PORTS_CSV" ]]; then
+        echo -e "
+  ${C_YEL}[!] Scan interrumpido — guardando sesión parcial…${C_RST}"
+        session_save 2>/dev/null || true
+    fi
+    [[ $exit_code -ne 0 && $exit_code -ne 130 ]] && echo -e "  ${C_RED}Exit code: ${exit_code}${C_RST}"
+}
+trap '_cleanup_on_exit' EXIT
+trap 'echo -e "
+  ${C_YEL}[Ctrl+C] Interrumpido — limpiando…${C_RST}"; exit 130' INT TERM
 
 # ─── BANNER ─────────────────────────────────────────────────────
 SCRIPT_VERSION="4.0"
@@ -554,6 +887,7 @@ REPORT_CLIENT=""
 REPORT_CENSORED=""
 REPORT_PENTESTER=""
 INTEL_EXTRA_PAYLOADS_XSS=()
+INTEL_EXTRA_PAYLOADS_SSRF=()  # cargados desde update/custom
 INTEL_RECENT_CVES=()
 INTEL_TECH_CVES=()   # CVEs específicos del tech stack detectado
 
@@ -570,39 +904,47 @@ init_update_system() {
 
 # ─── MÓDULO DE ACTUALIZACIÓN PRINCIPAL ──────────────────────────
 modulo_update() {
-    log "══ WriestTavo Auto-Updater ══════════════════════"
+    log "══ WriestTavo — Intel & Exploit Updater ══════════"
 
     init_update_system
 
     local last_update="nunca"
     [[ -f "$LAST_UPDATE_FILE" ]] && last_update=$(cat "$LAST_UPDATE_FILE")
     echo -e "  Última actualización: ${C_CYN}${last_update}${C_RST}"
+    echo -e "  ${C_DIM}Fuentes: NVD · CISA KEV · Exploit-DB · GitHub Advisories · Packet Storm${C_RST}"
+    echo -e "  ${C_DIM}         EPSS · OSV · VulnCheck · WPScan · Nuclei · SecLists · PayloadsAllTheThings${C_RST}"
     echo
 
-    # ── 1. NUCLEI TEMPLATES (la más importante) ──────────────────
-    if command -v nuclei >/dev/null 2>&1; then
-        log "  [1/5] Actualizando nuclei templates..."
-        nuclei -update-templates -silent 2>/dev/null && \
-            ok "Nuclei templates actualizados ($(nuclei -version 2>&1 | head -1))" || \
-            warn "Error actualizando nuclei templates"
+    local update_errors=0
+    local update_ok=0
 
-        # Contar templates nuevos
-        local tpl_count
-        tpl_count=$(find "${HOME}/nuclei-templates" -name "*.yaml" 2>/dev/null | wc -l)
-        intel_log "Nuclei: ${tpl_count} templates disponibles"
+    # ════════════════════════════════════════════════════════════
+    # [1/11] NUCLEI TEMPLATES
+    # Fuente: github.com/projectdiscovery/nuclei-templates
+    # Qué da: 9000+ templates CVE, exposures, misconfiguraciones
+    # ════════════════════════════════════════════════════════════
+    log "  [01/11] Nuclei templates…"
+    if command -v nuclei &>/dev/null; then
+        spinner_start "Nuclei: actualizando templates…"
+        nuclei -update-templates -silent 2>/dev/null
+        _spinner_stop
+        local tpl_count; tpl_count=$(find "${HOME}/nuclei-templates" -name "*.yaml" 2>/dev/null | wc -l)
+        ok "Nuclei: ${tpl_count} templates ($(nuclei -version 2>&1 | grep -oP 'v[\d.]+' | head -1))"
+        ((update_ok++))
     else
-        warn "Nuclei no instalado: sudo apt install nuclei"
+        warn "Nuclei no instalado. Instalar: sudo apt install nuclei"
+        ((update_errors++))
     fi
 
-    # ── 2. CVE FEED — NVD API (últimas 48h) ──────────────────────
-    log "  [2/5] Descargando CVEs recientes (NVD)..."
+    # ════════════════════════════════════════════════════════════
+    # [2/11] NVD — NIST National Vulnerability Database
+    # Fuente: services.nvd.nist.gov/rest/json/cves/2.0
+    # Qué da: CVSS scores, CWE, CPE, descripción oficial de CVEs
+    # ════════════════════════════════════════════════════════════
+    log "  [02/11] NVD (NIST) — CVEs últimas 48h…"
     local nvd_cache="${CVE_CACHE}/nvd_recent.json"
-    local two_days_ago
-    two_days_ago=$(date -d "2 days ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null || \
-                   date -v-2d +%Y-%m-%dT%H:%M:%S 2>/dev/null || \
-                   echo "2024-01-01T00:00:00")
-    local today
-    today=$(date +%Y-%m-%dT%H:%M:%S)
+    local two_days_ago; two_days_ago=$(date -d "2 days ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null || echo "2024-01-01T00:00:00")
+    local today; today=$(date +%Y-%m-%dT%H:%M:%S)
 
     local nvd_resp
     nvd_resp=$(curl -skL --max-time 20 \
@@ -611,16 +953,15 @@ modulo_update() {
 
     if echo "$nvd_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('vulnerabilities',[])),'CVEs')" 2>/dev/null; then
         echo "$nvd_resp" > "$nvd_cache"
-        # Parsear CVEs críticos (CVSS >= 9.0)
         python3 - << PYNVD
-import json, sys
+import json
 try:
     with open("${nvd_cache}") as f: data = json.load(f)
     critical = []
     for v in data.get("vulnerabilities", []):
         cve = v.get("cve", {})
         cve_id = cve.get("id", "")
-        desc = cve.get("descriptions", [{}])[0].get("value", "")[:120]
+        desc = cve.get("descriptions", [{}])[0].get("value", "")[:100]
         metrics = cve.get("metrics", {})
         score = 0
         for key in ["cvssMetricV31", "cvssMetricV30", "cvssMetricV2"]:
@@ -628,22 +969,96 @@ try:
                 score = metrics[key][0].get("cvssData", {}).get("baseScore", 0)
                 break
         if score >= 9.0:
-            critical.append(f"{cve_id} (CVSS:{score}) — {desc}")
+            critical.append(f"  {cve_id} CVSS:{score} — {desc}")
     if critical:
         print(f"  CVEs CRÍTICOS (CVSS≥9.0) últimas 48h: {len(critical)}")
-        for c in critical[:5]: print(f"    • {c}")
+        for c in critical[:5]: print(c)
     else:
-        print("  Sin CVEs críticos en las últimas 48h")
+        print("  Sin CVEs críticos nuevos en las últimas 48h")
 except Exception as e:
-    print(f"  Error parseando NVD: {e}")
+    print(f"  Error: {e}")
 PYNVD
-        ok "CVE feed actualizado: ${nvd_cache}"
+        ((update_ok++))
     else
-        warn "No se pudo conectar a NVD API. Verificar internet."
+        warn "NVD API no disponible."
+        ((update_errors++))
     fi
 
-    # ── 3. EXPLOIT-DB RSS FEED ────────────────────────────────────
-    log "  [3/5] Exploit-DB feed reciente..."
+    # ════════════════════════════════════════════════════════════
+    # [3/11] CISA KEV — Known Exploited Vulnerabilities
+    # Fuente: cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+    # Qué da: CVEs que están siendo EXPLOTADOS ACTIVAMENTE en la wild
+    #         Obligatorio parchear en agencias US — la lista más crítica
+    # ════════════════════════════════════════════════════════════
+    log "  [03/11] CISA KEV — Vulnerabilidades explotadas activamente…"
+    local kev_cache="${CVE_CACHE}/cisa_kev.json"
+    local kev_resp
+    kev_resp=$(curl -skL --max-time 20 \
+        "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" \
+        2>/dev/null)
+
+    if echo "$kev_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('vulnerabilities',[])),'KEV')" 2>/dev/null; then
+        echo "$kev_resp" > "$kev_cache"
+        python3 - << PYKEV
+import json
+from datetime import datetime, timedelta
+try:
+    with open("${kev_cache}") as f: data = json.load(f)
+    total = len(data.get("vulnerabilities", []))
+    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    recent = [v for v in data["vulnerabilities"] if v.get("dateAdded","") >= cutoff]
+    print(f"  CISA KEV total: {total} CVEs | Añadidos último mes: {len(recent)}")
+    for v in recent[:5]:
+        print(f"  {v.get('cveID','')} — {v.get('vendorProject','')} {v.get('product','')} — {v.get('shortDescription','')[:80]}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYKEV
+        ok "CISA KEV actualizado: ${kev_cache}"
+        ((update_ok++))
+    else
+        warn "CISA KEV no disponible."
+        ((update_errors++))
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # [4/11] EPSS — Exploit Prediction Scoring System
+    # Fuente: api.first.org/epss
+    # Qué da: Probabilidad (0-1) de que un CVE sea explotado en 30 días
+    #         Creado por FIRST.org — el mejor predictor de riesgo real
+    # ════════════════════════════════════════════════════════════
+    log "  [04/11] EPSS — Puntuaciones de probabilidad de explotación…"
+    local epss_cache="${CVE_CACHE}/epss_top.json"
+    local epss_resp
+    epss_resp=$(curl -skL --max-time 15 \
+        "https://api.first.org/data/v1/epss?order=!epss&limit=20" \
+        2>/dev/null)
+
+    if echo "$epss_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null | grep -q "OK"; then
+        echo "$epss_resp" > "$epss_cache"
+        python3 - << PYEPSS
+import json
+try:
+    with open("${epss_cache}") as f: data = json.load(f)
+    print(f"  Top CVEs por probabilidad de explotación (EPSS):")
+    for v in data.get("data", [])[:5]:
+        pct = float(v.get("epss", 0)) * 100
+        print(f"  {v.get('cve','')} — {pct:.1f}% probabilidad ({v.get('percentile','')[:5]} percentil)")
+except Exception as e:
+    print(f"  Error: {e}")
+PYEPSS
+        ok "EPSS top-20 actualizado"
+        ((update_ok++))
+    else
+        warn "EPSS API no disponible (first.org)"
+        ((update_errors++))
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # [5/11] EXPLOIT-DB — RSS + CSV database
+    # Fuente: exploit-db.com/rss.xml + gitlab exploitdb CSV
+    # Qué da: PoCs listos para usar, shellcodes, papers
+    # ════════════════════════════════════════════════════════════
+    log "  [05/11] Exploit-DB — exploits recientes…"
     local edb_cache="${CVE_CACHE}/exploitdb_recent.txt"
     local edb_feed
     edb_feed=$(curl -skL --max-time 15 \
@@ -652,70 +1067,335 @@ PYNVD
 
     if [[ -n "$edb_feed" ]]; then
         echo "$edb_feed" > "$edb_cache"
-        echo -e "${C_YEL}  Exploits recientes en Exploit-DB:${C_RST}"
-        echo "$edb_feed" | head -8 | while IFS= read -r line; do
+        echo -e "  ${C_YEL}Últimos exploits publicados:${C_RST}"
+        echo "$edb_feed" | head -5 | while IFS= read -r line; do
             echo -e "    ${C_DIM}•${C_RST} $line"
         done
-        ok "Exploit-DB feed guardado: ${edb_cache}"
+        ok "Exploit-DB feed actualizado"
+        ((update_ok++))
     else
-        warn "No se pudo obtener feed de Exploit-DB"
+        warn "Exploit-DB RSS no disponible"
+        ((update_errors++))
     fi
 
-    # ── 4. ACTUALIZAR PAYLOADS DESDE PAYLOADBOX/SECLISTS ─────────
-    log "  [4/5] Actualizando SecLists / payloads..."
+    # ════════════════════════════════════════════════════════════
+    # [6/11] PACKET STORM SECURITY
+    # Fuente: packetstormsecurity.com/feeds/
+    # Qué da: Advisories, exploits, tools, whitepapers
+    #         Más rápido que EDB para 0-days recientes
+    # ════════════════════════════════════════════════════════════
+    log "  [06/11] Packet Storm Security — advisories recientes…"
+    local pss_cache="${CVE_CACHE}/packetstorm_recent.txt"
+    local pss_feed
+    pss_feed=$(curl -skL --max-time 15 \
+        "https://rss.packetstormsecurity.com/files/exploits/" 2>/dev/null | \
+        grep -oP '(?<=<title>)[^<]+' | grep -v "^Exploit Files" | head -10)
 
-    # Actualizar SecLists si está como repo git
+    if [[ -n "$pss_feed" ]]; then
+        echo "$pss_feed" > "$pss_cache"
+        echo -e "  ${C_YEL}Últimos exploits en Packet Storm:${C_RST}"
+        echo "$pss_feed" | head -5 | while IFS= read -r line; do
+            echo -e "    ${C_DIM}•${C_RST} $line"
+        done
+        ok "Packet Storm feed actualizado"
+        ((update_ok++))
+    else
+        warn "Packet Storm RSS no disponible"
+        ((update_errors++))
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # [7/11] GITHUB ADVISORY DATABASE (GHSA)
+    # Fuente: api.github.com/advisories
+    # Qué da: CVEs en librerías open source (npm, pip, gem, maven…)
+    #         Ideal para encontrar vulns en dependencias de apps web
+    # ════════════════════════════════════════════════════════════
+    log "  [07/11] GitHub Advisory Database — librerías vulnerables…"
+    local ghsa_cache="${CVE_CACHE}/ghsa_recent.json"
+    local ghsa_resp
+    ghsa_resp=$(curl -skL --max-time 15 \
+        "https://api.github.com/advisories?per_page=10&sort=updated&type=reviewed&severity=critical,high" \
+        -H "Accept: application/vnd.github+json" \
+        2>/dev/null)
+
+    if echo "$ghsa_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d),'advisories')" 2>/dev/null; then
+        echo "$ghsa_resp" > "$ghsa_cache"
+        python3 - << PYGHSA
+import json
+try:
+    with open("${ghsa_cache}") as f: data = json.load(f)
+    print(f"  GitHub Advisories CRITICAL/HIGH recientes:")
+    for v in data[:5]:
+        ecosystems = [p.get("package",{}).get("ecosystem","?") for p in v.get("vulnerabilities",[])[:1]]
+        eco = ecosystems[0] if ecosystems else "?"
+        print(f"  {v.get('ghsa_id','')} [{eco}] — {v.get('summary','')[:80]}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYGHSA
+        ok "GitHub GHSA actualizado"
+        ((update_ok++))
+    else
+        warn "GitHub GHSA no disponible"
+        ((update_errors++))
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # [8/11] OSV — Open Source Vulnerabilities (Google)
+    # Fuente: api.osv.dev/v1/query
+    # Qué da: Vulns en ecosistemas: PyPI, npm, Maven, Go, Rust, PHP…
+    #         Cruzado con GHSA, CVE, GSD — la más completa para OSS
+    # ════════════════════════════════════════════════════════════
+    log "  [08/11] OSV (Google) — vulnerabilidades en ecosistemas OSS…"
+    local osv_cache="${CVE_CACHE}/osv_recent.json"
+    # Query: vulns recientes en los ecosistemas más comunes en web
+    local osv_resp
+    osv_resp=$(curl -skL --max-time 15 -X POST \
+        "https://api.osv.dev/v1/query" \
+        -H "Content-Type: application/json" \
+        -d '{"package":{"name":"","ecosystem":"PyPI"},"version":""}' \
+        2>/dev/null)
+
+    # Alternativa más útil: buscar por ecosistemas web
+    local osv_summary=""
+    for ecosystem in "npm" "PyPI" "Packagist" "Maven"; do
+        local count
+        count=$(curl -skL --max-time 8 \
+            "https://api.osv.dev/v1/vulns?page_size=5" \
+            -X POST -H "Content-Type: application/json" \
+            -d "{\"query\":{\"package\":{\"ecosystem\":\"${ecosystem}\"}}}" \
+            2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total','?'))" 2>/dev/null)
+        [[ -n "$count" ]] && osv_summary+="${ecosystem}:${count} "
+    done
+
+    if [[ -n "$osv_summary" ]]; then
+        ok "OSV disponible — totales por ecosistema: ${osv_summary}"
+        echo "$osv_summary" > "${CVE_CACHE}/osv_totals.txt"
+        ((update_ok++))
+    else
+        # Fallback: solo verificar que la API responde
+        if curl -skL --max-time 10 "https://api.osv.dev/v1/vulns" &>/dev/null; then
+            ok "OSV API disponible (api.osv.dev)"
+            ((update_ok++))
+        else
+            warn "OSV API no disponible"
+            ((update_errors++))
+        fi
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # [9/11] WPSCAN VULNERABILITY DATABASE
+    # Fuente: wpscan.com/api/v3 (requiere API key gratuita)
+    # Qué da: Vulns específicas de WordPress: plugins, themes, core
+    #         Solo aplica si INTEL_CMS=wordpress
+    # ════════════════════════════════════════════════════════════
+    log "  [09/11] WPScan Vulnerability DB — plugins/themes WordPress…"
+    local wpscan_key_file="${UPDATE_DIR}/wpscan_api_key.txt"
+    if [[ -f "$wpscan_key_file" ]]; then
+        local wp_key; wp_key=$(cat "$wpscan_key_file")
+        local wp_resp
+        wp_resp=$(curl -skL --max-time 15 \
+            "https://wpscan.com/api/v3/status" \
+            -H "Authorization: Token token=${wp_key}" \
+            2>/dev/null)
+        if echo "$wp_resp" | grep -q '"success"'; then
+            ok "WPScan API activa (key: ${wp_key:0:8}…)"
+            echo "$(date +%Y-%m-%d) WPScan API OK" >> "${CVE_CACHE}/wpscan_status.txt"
+            ((update_ok++))
+        else
+            warn "WPScan API key inválida o límite alcanzado"
+            ((update_errors++))
+        fi
+    else
+        echo -e "  ${C_DIM}WPScan API key no configurada.${C_RST}"
+        echo -e "  ${C_DIM}Registro gratuito (25 req/día): https://wpscan.com/register${C_RST}"
+        echo -e "  ${C_DIM}Guardar key: echo 'TU_KEY' > ${wpscan_key_file}${C_RST}"
+        ((update_errors++))
+    fi
+
+    # ════════════════════════════════════════════════════════════
+    # [10/11] SECLISTS + PAYLOADSALLTHETHINGS
+    # Fuente: github.com/danielmiessler/SecLists
+    #         github.com/swisskyrepo/PayloadsAllTheThings
+    # Qué da: Wordlists, payloads de ataque actualizados por la comunidad
+    # ════════════════════════════════════════════════════════════
+    log "  [10/11] SecLists + PayloadsAllTheThings…"
+
+    # SecLists
     if [[ -d "/usr/share/seclists/.git" ]]; then
         git -C /usr/share/seclists pull --quiet 2>/dev/null && \
-            ok "SecLists actualizado" || warn "Error actualizando SecLists"
+            ok "SecLists actualizado (/usr/share/seclists)" || warn "Error SecLists"
+        ((update_ok++))
     elif [[ -d "${HOME}/SecLists/.git" ]]; then
         git -C "${HOME}/SecLists" pull --quiet 2>/dev/null && ok "SecLists actualizado"
+        ((update_ok++))
     else
-        warn "SecLists no es repo git. Instalar: sudo apt install seclists"
+        warn "SecLists no instalado: sudo apt install seclists"
+        ((update_errors++))
     fi
 
-    # Cargar payloads extra desde archivos custom del usuario
-    _load_custom_payloads
+    # PayloadsAllTheThings
+    local patt_dir="${UPDATE_DIR}/PayloadsAllTheThings"
+    if [[ -d "${patt_dir}/.git" ]]; then
+        git -C "${patt_dir}" pull --quiet 2>/dev/null && \
+            ok "PayloadsAllTheThings actualizado" || warn "Error PayloadsAllTheThings"
+        ((update_ok++))
+    else
+        echo -e "  ${C_DIM}Descargando PayloadsAllTheThings (primera vez)…${C_RST}"
+        spinner_start "Clonando PayloadsAllTheThings…"
+        git clone --depth=1 --quiet \
+            "https://github.com/swisskyrepo/PayloadsAllTheThings.git" \
+            "${patt_dir}" 2>/dev/null
+        _spinner_stop
+        if [[ -d "${patt_dir}" ]]; then
+            ok "PayloadsAllTheThings descargado: ${patt_dir}"
+            # Cargar algunos payloads automáticamente
+            _sync_patt_payloads "${patt_dir}"
+            ((update_ok++))
+        else
+            warn "No se pudo clonar PayloadsAllTheThings (¿sin internet?)"
+            ((update_errors++))
+        fi
+    fi
 
-    # ── 5. ACTUALIZAR SCRIPT (si hay nueva versión en GitHub) ─────
-    log "  [5/5] Verificando actualizaciones del script..."
+    # ════════════════════════════════════════════════════════════
+    # [11/11] SCRIPT AUTO-UPDATE
+    # Fuente: GitHub del script (si el usuario configuró la URL)
+    # ════════════════════════════════════════════════════════════
+    log "  [11/11] Verificando actualizaciones del script…"
     _check_script_update
+    ((update_ok++))
 
-    # ── Guardar timestamp ─────────────────────────────────────────
+    # ── Guardar timestamp y resumen ───────────────────────────────
     date '+%Y-%m-%d %H:%M' > "$LAST_UPDATE_FILE"
-    ok "Actualización completa. Próxima: ejecuta --update cuando quieras."
+    echo
+    echo -e "  ${C_GRN}┌──────────────────────────────────────────┐${C_RST}"
+    echo -e "  ${C_GRN}│  Update completo                          │${C_RST}"
+    echo -e "  ${C_GRN}│  ✅ OK: ${update_ok}/11   ❌ Errores: ${update_errors}/11$(printf '%*s' $((16 - ${#update_ok} - ${#update_errors})) '')│${C_RST}"
+    echo -e "  ${C_GRN}│  Siguiente: --update cuando quieras       │${C_RST}"
+    echo -e "  ${C_GRN}└──────────────────────────────────────────┘${C_RST}"
     echo
 }
+
+# ── Helper: importar payloads de PayloadsAllTheThings ────────────
+_sync_patt_payloads() {
+    local patt_dir="$1"
+    [[ ! -d "$patt_dir" ]] && return
+
+    local loaded=0
+    # SQLi
+    local sqli_f="${patt_dir}/SQL Injection/Intruder/Auth_Bypass.txt"
+    if [[ -f "$sqli_f" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_SQLI+=("$line")
+        done < "$sqli_f"
+        ((loaded++))
+    fi
+    # XSS
+    local xss_f="${patt_dir}/XSS Injection/Intruder/xss.txt"
+    if [[ -f "$xss_f" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_XSS+=("$line")
+        done < "$xss_f"
+        ((loaded++))
+    fi
+    # LFI
+    local lfi_f="${patt_dir}/File Inclusion/Intruder/deep_traversal.txt"
+    if [[ -f "$lfi_f" ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_LFI+=("$line")
+        done < "$lfi_f"
+        ((loaded++))
+    fi
+    [[ $loaded -gt 0 ]] && intel_log "PayloadsAllTheThings: ${loaded} archivos importados automáticamente"
+}
+
 
 # ─── CARGAR PAYLOADS CUSTOM DEL USUARIO ─────────────────────────
 _load_custom_payloads() {
     local loaded=0
 
-    # SQLi extra
-    if [[ -s "${CUSTOM_PAYLOADS}/sqli_extra.txt" ]]; then
-        while IFS= read -r line; do
-            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_SQLI+=("$line")
-        done < "${CUSTOM_PAYLOADS}/sqli_extra.txt"
-        ((loaded+=${#INTEL_EXTRA_PAYLOADS_SQLI[@]}))
+    # ── 1. Archivos _extra.txt del usuario (via --add-payload o manual) ──
+    # Cargar cada archivo _extra.txt del usuario
+    local _f
+    for _f in "${CUSTOM_PAYLOADS}/sqli_extra.txt"; do
+        [[ -s "$_f" ]] && while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            INTEL_EXTRA_PAYLOADS_SQLI+=("$line"); ((loaded++))
+        done < "$_f"; done
+    for _f in "${CUSTOM_PAYLOADS}/xss_extra.txt"; do
+        [[ -s "$_f" ]] && while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            INTEL_EXTRA_PAYLOADS_XSS+=("$line"); ((loaded++))
+        done < "$_f"; done
+    for _f in "${CUSTOM_PAYLOADS}/lfi_extra.txt"; do
+        [[ -s "$_f" ]] && while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            INTEL_EXTRA_PAYLOADS_LFI+=("$line"); ((loaded++))
+        done < "$_f"; done
+    for _f in "${CUSTOM_PAYLOADS}/ssrf_extra.txt"; do
+        [[ -s "$_f" ]] && while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            INTEL_EXTRA_PAYLOADS_SSRF+=("$line"); ((loaded++))
+        done < "$_f"; done
+
+    # ── 2. PayloadsAllTheThings (descargado por --update) ────────────────
+    local patt_dir="${UPDATE_DIR}/PayloadsAllTheThings"
+    if [[ -d "$patt_dir" ]]; then
+        # SQLi
+        for f in             "${patt_dir}/SQL Injection/Intruder/Auth_Bypass.txt"             "${patt_dir}/SQL Injection/Intruder/MSSQL_Stacked_Queries.txt"             "${patt_dir}/SQL Injection/Intruder/MySQL_Stacked_Queries.txt"; do
+            [[ -f "$f" ]] && while IFS= read -r line; do
+                [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_SQLI+=("$line") && ((loaded++))
+            done < "$f"
+        done
+        # XSS
+        for f in             "${patt_dir}/XSS Injection/Intruder/xss.txt"             "${patt_dir}/XSS Injection/Intruder/dom-xss.txt"; do
+            [[ -f "$f" ]] && while IFS= read -r line; do
+                [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_XSS+=("$line") && ((loaded++))
+            done < "$f"
+        done
+        # LFI
+        for f in             "${patt_dir}/File Inclusion/Intruder/deep_traversal.txt"             "${patt_dir}/File Inclusion/Intruder/Linux-files.txt"             "${patt_dir}/File Inclusion/Intruder/Windows-files.txt"; do
+            [[ -f "$f" ]] && while IFS= read -r line; do
+                [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_LFI+=("$line") && ((loaded++))
+            done < "$f"
+        done
+        # SSRF
+        for f in             "${patt_dir}/Server Side Request Forgery/Intruder/SSRF.txt"             "${patt_dir}/Server Side Request Forgery/Intruder/cloud_metadata.txt"; do
+            [[ -f "$f" ]] && while IFS= read -r line; do
+                [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_SSRF+=("$line") && ((loaded++))
+            done < "$f"
+        done
+        [[ $loaded -gt 0 ]] && intel_log "PayloadsAllTheThings: payloads cargados en memoria"
     fi
 
-    # XSS extra
-    if [[ -s "${CUSTOM_PAYLOADS}/xss_extra.txt" ]]; then
-        while IFS= read -r line; do
-            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_XSS+=("$line")
-        done < "${CUSTOM_PAYLOADS}/xss_extra.txt"
-        ((loaded+=${#INTEL_EXTRA_PAYLOADS_XSS[@]}))
+    # ── 3. SecLists (si está instalado) ─────────────────────────────────
+    local seclists_base=""
+    [[ -d "/usr/share/seclists" ]] && seclists_base="/usr/share/seclists"
+    [[ -d "${HOME}/SecLists" ]]    && seclists_base="${HOME}/SecLists"
+
+    if [[ -n "$seclists_base" ]]; then
+        # SQLi
+        local sl_sqli="${seclists_base}/Fuzzing/SQLi/Generic-SQLi.txt"
+        [[ -f "$sl_sqli" ]] && while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_SQLI+=("$line") && ((loaded++))
+        done < "$sl_sqli"
+        # XSS
+        local sl_xss="${seclists_base}/Fuzzing/XSS/XSS-Jhaddix.txt"
+        [[ -f "$sl_xss" ]] && while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_XSS+=("$line") && ((loaded++))
+        done < "$sl_xss"
+        # LFI
+        local sl_lfi="${seclists_base}/Fuzzing/LFI/LFI-LFISuite-pathtotest-huge.txt"
+        [[ -f "$sl_lfi" ]] && while IFS= read -r line; do
+            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_LFI+=("$line") && ((loaded++))
+        done < "$sl_lfi"
+        [[ $loaded -gt 0 ]] && intel_log "SecLists: payloads integrados desde ${seclists_base}"
     fi
 
-    # LFI extra
-    if [[ -s "${CUSTOM_PAYLOADS}/lfi_extra.txt" ]]; then
-        while IFS= read -r line; do
-            [[ -n "$line" && ! "$line" =~ ^# ]] && INTEL_EXTRA_PAYLOADS_LFI+=("$line")
-        done < "${CUSTOM_PAYLOADS}/lfi_extra.txt"
-        ((loaded+=${#INTEL_EXTRA_PAYLOADS_LFI[@]}))
+    # ── Resumen final ─────────────────────────────────────────────────────
+    if [[ $loaded -gt 0 ]]; then
+        intel_log "Payloads extra en memoria: SQLi=${#INTEL_EXTRA_PAYLOADS_SQLI[@]} XSS=${#INTEL_EXTRA_PAYLOADS_XSS[@]} LFI=${#INTEL_EXTRA_PAYLOADS_LFI[@]} SSRF=${#INTEL_EXTRA_PAYLOADS_SSRF[@]}"
     fi
-
-    [[ $loaded -gt 0 ]] && intel_log "Payloads custom cargados: ${loaded} total"
 }
 
 # ─── BUSCAR CVES PARA EL STACK DETECTADO ────────────────────────
@@ -896,116 +1576,254 @@ modulo_ttl_os() {
 }
 
 # ─── MÓDULO 2: PORT DISCOVERY ───────────────────────────────────
-modulo_port_scan() {
-    prog_modulo 2 "Port Discovery — SYN Scan"
-    spinner_start "Port Discovery — SYN Scan"
+# ════════════════════════════════════════════════════════════════
+# MÓDULO 2: PORT SCAN — PIPELINE PROGRESIVO (3 WAVES)
+#
+#  Wave 1 → top-100  (sync,  ~2s)   → arrancan módulos de inmediato
+#  Wave 2 → top-1000 (bg,    ~5s)   → merge al final de Fase 3
+#  Wave 3 → 1-65535  (bg, masscan)  → merge al final de Fase 5
+#
+#  El scan web empieza con los puertos de Wave 1.
+#  Cada merge añade puertos nuevos y corre version scan solo en ellos.
+# ════════════════════════════════════════════════════════════════
 
-    # ── Configuración por modo ──────────────────────────────────
-    local min_rate_fast min_rate_full extra_flags top_ports
-    case "$SCAN_MODE" in
-        stealth)
-            min_rate_fast=500;  min_rate_full=300
-            extra_flags="-n -Pn -T2"; top_ports=500
-            tip "Modo STEALTH: fase 1 = top-${top_ports} puertos (silencioso y rápido)."
-            ;;
-        aggressive)
-            min_rate_fast=8000; min_rate_full=6000
-            extra_flags="-n -Pn -T5"; top_ports=1000
-            ;;
-        *)  # normal
-            min_rate_fast=3000; min_rate_full=2000
-            extra_flags="-n -Pn -T4"; top_ports=1000
-            ;;
-    esac
-
-    # ── FASE A: Top-ports (rápido, siempre corre) ───────────────
-    echo -e "  ${C_CYN}▶ Fase A — Top ${top_ports} puertos (rápido)${C_RST}"
-    local cmd_a="nmap ${extra_flags} -sS --open --top-ports ${top_ports} --min-rate ${min_rate_fast} ${TARGET}"
-    cmd_show "$cmd_a"
-
-    local nmap_out_a
-    nmap_out_a=$(nmap ${extra_flags} -sS --open \
-        --top-ports ${top_ports} --min-rate ${min_rate_fast} \
-        "${TARGET}" 2>/dev/null)
-
-    local puertos_a
-    puertos_a=$(echo "${nmap_out_a}" | grep '^[0-9]' | cut -d'/' -f1)
-
-    if [[ -n "$puertos_a" ]]; then
-        local csv_a
-        csv_a=$(echo "${puertos_a}" | paste -sd ',' -)
-        ok "Fase A — Puertos encontrados: ${C_YEL}${csv_a}${C_RST}"
-        echo "${nmap_out_a}" > "${OUTPUT_DIR}/nmap/phase_a_top_ports.txt"
-    else
-        warn "Fase A — 0 puertos en top-${top_ports}."
-    fi
-
-    # ── FASE B: Todos los puertos (background, opcional) ────────
-    echo
-    echo -e "  ${C_CYN}▶ Fase B — Escaneo completo -p- (65535 puertos)${C_RST}"
-    echo -e "  ${C_YEL}  Esto puede tardar varios minutos.${C_RST}"
-    echo -ne "  ${C_YEL}¿Ejecutar escaneo completo en segundo plano? [s/N]: ${C_RST}"
-    read -r run_full
-
-    local nmap_out_b=""
-    local puertos_b=""
-    if [[ "${run_full,,}" =~ ^(s|si|y|yes|1)$ ]]; then
-        local cmd_b="nmap ${extra_flags} -sS --open -p- --min-rate ${min_rate_full} ${TARGET}"
-        cmd_show "$cmd_b"
-        local bg_file="${OUTPUT_DIR}/nmap/phase_b_fullscan.txt"
-        nmap ${extra_flags} -sS --open -p- --min-rate ${min_rate_full} \
-            "${TARGET}" > "${bg_file}" 2>/dev/null &
-        local bg_pid=$!
-        echo -e "  ${C_GRN}[PID ${bg_pid}] Escaneo completo corriendo en background.${C_RST}"
-        echo -e "  ${C_DIM}  Resultado en: ${bg_file}${C_RST}"
-        echo -e "  ${C_DIM}  Seguimiento: tail -f ${bg_file}${C_RST}"
-        add_finding "INFO" "Escaneo Completo (background)" "PID=${bg_pid} → ${bg_file}"
-    else
-        warn "Escaneo completo omitido. Continuando con resultados de Fase A."
-    fi
-
-    # ── Consolidar puertos ──────────────────────────────────────
-    local all_ports
-    all_ports=$(echo -e "${puertos_a}\n${puertos_b}" | grep -v '^$' | sort -un)
-
-    local nmap_out="${nmap_out_a}"
-
-    local puertos_nl="$all_ports"
-
-    if [[ -z "${puertos_nl}" ]]; then
-        # Si vino una URL original, inferir puertos web desde el protocolo
-        if [[ -n "$ORIGINAL_URL" ]]; then
-            warn "nmap no detectó puertos abiertos. Infiriendo desde URL original..."
-            if [[ "$ORIGINAL_URL" =~ ^https:// ]]; then
-                WEB_PORTS=(443); OPEN_PORTS_CSV="443"
-            else
-                WEB_PORTS=(80);  OPEN_PORTS_CSV="80"
-            fi
-            ok "Puerto web asumido: ${C_YEL}${OPEN_PORTS_CSV}${C_RST} (basado en ${ORIGINAL_URL})"
-            add_finding "INFO" "Puertos Web (inferidos)" "nmap bloqueado por firewall/CDN. Usando puerto ${OPEN_PORTS_CSV} desde URL."
-        else
-            err "0 puertos abiertos encontrados."
-            add_finding "INFO" "Sin puertos abiertos" "No se detectaron puertos TCP abiertos en el target."
-            return
-        fi
-    else
-        OPEN_PORTS_CSV=$(echo "${puertos_nl}" | paste -sd ',' -)
-        ok "Puertos abiertos: ${C_YEL}${OPEN_PORTS_CSV}${C_RST}"
-        add_finding "INFO" "Puertos TCP Abiertos" "${OPEN_PORTS_CSV}"
-
-        # Detectar puertos web para módulos posteriores
-        while IFS= read -r p; do
-            is_web_port "$p" && WEB_PORTS+=("$p")
-        done <<< "${puertos_nl}"
-    fi
-
-    echo
-    echo "${nmap_out}" > "${OUTPUT_DIR}/nmap/port_discovery.txt"
+# ── Helper: extraer puertos de output nmap ───────────────────────
+_parse_nmap_ports() {
+    grep '^[0-9]' "$1" 2>/dev/null | cut -d'/' -f1 | sort -un
 }
 
+# ── Helper: registrar puertos web desde lista ────────────────────
+_register_web_ports() {
+    local p
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        is_web_port "$p" && WEB_PORTS+=("$p")
+    done <<< "$1"
+    # Deduplicar WEB_PORTS
+    IFS=$'\n' read -r -d '' -a WEB_PORTS < <(printf '%s\n' "${WEB_PORTS[@]}" | sort -un && printf '\0')
+}
+
+# ── Helper: version scan SOLO en puertos nuevos ──────────────────
+_version_scan_new_ports() {
+    local wave_label="$1"; shift
+    local new_ports=("$@")
+    [[ ${#new_ports[@]} -eq 0 ]] && return
+
+    # Filtrar los que ya procesamos
+    local pending=()
+    for p in "${new_ports[@]}"; do
+        local already=false
+        for done_p in "${PORTS_VERSION_DONE[@]}"; do
+            [[ "$p" == "$done_p" ]] && already=true && break
+        done
+        $already || pending+=("$p")
+    done
+    [[ ${#pending[@]} -eq 0 ]] && return
+
+    local csv; csv=$(printf '%s,' "${pending[@]}"); csv="${csv%,}"
+    local base="${OUTPUT_DIR}/nmap/version_scan_${wave_label}"
+
+    echo
+    echo -e "  ${C_BLU}[↻]${C_RST} ${C_BOLD}Version scan${C_RST} — ${wave_label} puertos nuevos: ${C_YEL}${csv}${C_RST}"
+    spinner_start "nmap -sV puertos nuevos: ${csv}"
+
+    nmap -n -Pn -sV -sC --min-rate 2000 \
+        -p"${csv}" -oA "${base}" "${TARGET}" 2>/dev/null
+
+    _spinner_stop
+
+    # Actualizar INTEL con versiones detectadas
+    local nmap_out; nmap_out=$(cat "${base}.nmap" 2>/dev/null)
+    _parse_intel_from_nmap_version "${nmap_out}" 2>/dev/null || true
+
+    # Marcar como procesados
+    PORTS_VERSION_DONE+=("${pending[@]}")
+    OPEN_PORTS_CSV=$(printf '%s,' "${PORTS_VERSION_DONE[@]}" | sed 's/,$//')
+    ok "Version scan ${wave_label}: completado (${#pending[@]} puertos)"
+}
+
+# ── Helper: merge wave background → detecta puertos nuevos ───────
+_merge_wave() {
+    local wave_num="$1"
+    local wave_pid_var="WAVE${wave_num}_PID"
+    local wave_file_var="WAVE${wave_num}_FILE"
+    local wave_ports_var="PORTS_WAVE${wave_num}"
+
+    local pid="${!wave_pid_var}"
+    local file="${!wave_file_var}"
+
+    [[ $pid -eq 0 ]] && return   # wave no lanzada
+    [[ -z "$file" ]] && return
+
+    echo
+    echo -e "  ${C_CYN}[W${wave_num}]${C_RST} Verificando Wave ${wave_num}…"
+
+    # Esperar si todavía corre (máximo 30s para no bloquear)
+    local waited=0
+    while kill -0 "$pid" 2>/dev/null && (( waited < 30 )); do
+        sleep 2; ((waited+=2))
+        printf "\r  ${C_DIM}  Wave ${wave_num} aún corriendo… ${waited}s${C_RST}   "
+    done
+    printf "\r%-60s\r" " "
+
+    if kill -0 "$pid" 2>/dev/null; then
+        warn "Wave ${wave_num} todavía corriendo (PID ${pid}). Se usará cuando termine."
+        return
+    fi
+
+    # Parsear resultados
+    local raw_ports
+    if [[ "$wave_num" == "3" ]]; then
+        # masscan output format: "Discovered open port X/tcp on IP"
+        raw_ports=$(grep -oP 'port \K[0-9]+' "$file" 2>/dev/null | sort -un)
+    else
+        raw_ports=$(_parse_nmap_ports "$file")
+    fi
+
+    [[ -z "$raw_ports" ]] && ok "Wave ${wave_num}: sin puertos nuevos." && return
+
+    # Detectar realmente nuevos
+    local new_ports=()
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        local seen=false
+        for done_p in "${PORTS_VERSION_DONE[@]}"; do
+            [[ "$p" == "$done_p" ]] && seen=true && break
+        done
+        $seen || new_ports+=("$p")
+    done <<< "$raw_ports"
+
+    eval "${wave_ports_var}=(\"\${new_ports[@]}\")"
+
+    if [[ ${#new_ports[@]} -gt 0 ]]; then
+        local csv; csv=$(printf '%s,' "${new_ports[@]}"); csv="${csv%,}"
+        ok "Wave ${wave_num} — ${#new_ports[@]} puertos nuevos: ${C_YEL}${csv}${C_RST}"
+        _register_web_ports "$(printf '%s\n' "${new_ports[@]}")"
+        _version_scan_new_ports "wave${wave_num}" "${new_ports[@]}"
+    else
+        ok "Wave ${wave_num} — sin puertos adicionales a los ya conocidos."
+    fi
+
+    # Limpiar PID para no re-procesar
+    eval "${wave_pid_var}=0"
+}
+
+modulo_port_scan() {
+    prog_modulo 2 "Port Discovery — Pipeline Progresivo (3 waves)"
+
+    # ── Tasas según modo ────────────────────────────────────────
+    local rate_w1 rate_w2 rate_w3 nmap_timing
+    case "$SCAN_MODE" in
+        stealth)    rate_w1=500;   rate_w2=300;   rate_w3=3000;  nmap_timing="-T2 -n -Pn" ;;
+        aggressive) rate_w1=8000;  rate_w2=6000;  rate_w3=200000; nmap_timing="-T5 -n -Pn" ;;
+        *)          rate_w1=3000;  rate_w2=2000;  rate_w3=50000; nmap_timing="-T4 -n -Pn" ;;
+    esac
+
+    # ── WAVE 1: top-100 ports — SÍNCRONO (~2s) ─────────────────
+    echo -e "\n  ${C_GRN}▶ Wave 1${C_RST} — top-100 puertos ${C_DIM}(síncrono, resultado inmediato)${C_RST}"
+    local w1_file="${OUTPUT_DIR}/nmap/wave1_top100.txt"
+    cmd_show "nmap ${nmap_timing} -sS --open --top-ports 100 --min-rate ${rate_w1} ${TARGET}"
+    spinner_start "Wave 1 — top-100…"
+
+    nmap ${nmap_timing} -sS --open \
+        --top-ports 100 --min-rate ${rate_w1} \
+        "${TARGET}" > "${w1_file}" 2>/dev/null
+    _spinner_stop
+
+    local raw1; raw1=$(_parse_nmap_ports "${w1_file}")
+    if [[ -n "$raw1" ]]; then
+        while IFS= read -r p; do PORTS_WAVE1+=("$p"); done <<< "$raw1"
+        OPEN_PORTS_CSV=$(printf '%s,' "${PORTS_WAVE1[@]}"); OPEN_PORTS_CSV="${OPEN_PORTS_CSV%,}"
+        _register_web_ports "$raw1"
+        ok "Wave 1 — Puertos: ${C_YEL}${OPEN_PORTS_CSV}${C_RST}  ${C_DIM}→ módulos web arrancan ya${C_RST}"
+        PORTS_VERSION_DONE+=("${PORTS_WAVE1[@]}")
+    else
+        # Nada en top-100 — inferir de URL si hay
+        if [[ -n "$ORIGINAL_URL" ]]; then
+            warn "Wave 1: 0 puertos. Infiriendo desde URL..."
+            [[ "$ORIGINAL_URL" =~ ^https:// ]] && { WEB_PORTS=(443); OPEN_PORTS_CSV="443"; } \
+                                                || { WEB_PORTS=(80);  OPEN_PORTS_CSV="80"; }
+            PORTS_VERSION_DONE+=("${WEB_PORTS[@]}")
+            ok "Puerto asumido: ${C_YEL}${OPEN_PORTS_CSV}${C_RST}"
+        else
+            warn "Wave 1: 0 puertos abiertos encontrados."
+        fi
+    fi
+
+    add_finding "INFO" "Puertos TCP (Wave 1)" "${OPEN_PORTS_CSV:-ninguno}"
+
+    # ── WAVE 2: top-1000 — BACKGROUND (~5-10s) ─────────────────
+    echo -e "\n  ${C_YEL}▶ Wave 2${C_RST} — top-1000 puertos ${C_DIM}(background, merge al final de Fase 3)${C_RST}"
+    WAVE2_FILE="${OUTPUT_DIR}/nmap/wave2_top1000.txt"
+    cmd_show "nmap ${nmap_timing} -sS --open --top-ports 1000 --min-rate ${rate_w2} ${TARGET}"
+
+    nmap ${nmap_timing} -sS --open \
+        --top-ports 1000 --min-rate ${rate_w2} \
+        "${TARGET}" > "${WAVE2_FILE}" 2>/dev/null &
+    WAVE2_PID=$!
+    echo -e "  ${C_DIM}  [PID ${WAVE2_PID}] Wave 2 corriendo… resultado disponible en ~5-10s${C_RST}"
+
+    # ── WAVE 3: 1-65535 — BACKGROUND (masscan si disponible) ───
+    echo -e "\n  ${C_YEL}▶ Wave 3${C_RST} — todos los puertos ${C_DIM}(background, merge al final de Fase 5)${C_RST}"
+    WAVE3_FILE="${OUTPUT_DIR}/nmap/wave3_full.txt"
+
+    if command -v masscan &>/dev/null && [[ "$SCAN_MODE" != "stealth" ]]; then
+        cmd_show "masscan -p1-65535 --rate ${rate_w3} ${TARGET}"
+        masscan -p1-65535 --rate "${rate_w3}" \
+            "${TARGET}" > "${WAVE3_FILE}" 2>/dev/null &
+        WAVE3_PID=$!
+        echo -e "  ${C_DIM}  [PID ${WAVE3_PID}] masscan @ ${rate_w3} pkt/s — ~15-30s${C_RST}"
+    else
+        cmd_show "nmap ${nmap_timing} -sS --open -p- --min-rate ${rate_w3} --stats-every 15s ${TARGET}"
+        nmap ${nmap_timing} -sS --open -p- \
+            --min-rate ${rate_w3} --stats-every 15s \
+            "${TARGET}" > "${WAVE3_FILE}" 2>/dev/null &
+        WAVE3_PID=$!
+        echo -e "  ${C_DIM}  [PID ${WAVE3_PID}] nmap -p- corriendo (instala masscan para ~15s)${C_RST}"
+    fi
+    # FIX: solo un proceso Wave3 — el if/else garantiza exactamente uno
+
+    echo
+    prog_modulo_ok "${OPEN_PORTS_CSV:-pendiente}"
+}
+
+
 # ─── MÓDULO 3: SERVICE & VERSION ────────────────────────────────
+# ── Helper: extraer INTEL de output de nmap version scan ────────
+_parse_intel_from_nmap_version() {
+    local nmap_out="$1"
+    [[ -z "$nmap_out" ]] && return
+    # OS
+    echo "$nmap_out" | grep -qi 'windows'     && INTEL_OS="windows"
+    echo "$nmap_out" | grep -qi 'linux\|unix' && [[ -z "$INTEL_OS" ]] && INTEL_OS="linux"
+    # Servicios → INTEL_TECHNOLOGIES
+    echo "$nmap_out" | grep -qi 'mysql'        && INTEL_TECHNOLOGIES+=("mysql")
+    echo "$nmap_out" | grep -qi 'postgresql'   && INTEL_TECHNOLOGIES+=("postgresql")
+    echo "$nmap_out" | grep -qi 'redis'        && INTEL_TECHNOLOGIES+=("redis")
+    echo "$nmap_out" | grep -qi 'mongodb'      && INTEL_TECHNOLOGIES+=("mongodb")
+    echo "$nmap_out" | grep -qi 'apache'       && INTEL_TECHNOLOGIES+=("apache")
+    echo "$nmap_out" | grep -qi 'nginx'        && INTEL_TECHNOLOGIES+=("nginx")
+    echo "$nmap_out" | grep -qi 'iis'          && INTEL_TECHNOLOGIES+=("iis") && INTEL_OS="windows"
+    echo "$nmap_out" | grep -qi 'openssl\|ssl' && INTEL_TECHNOLOGIES+=("ssl")
+    echo "$nmap_out" | grep -qi 'smb\|samba'   && INTEL_TECHNOLOGIES+=("smb")
+    echo "$nmap_out" | grep -qi 'ssh'          && INTEL_TECHNOLOGIES+=("ssh")
+    # Deduplicar
+    IFS=$'
+' read -r -d '' -a INTEL_TECHNOLOGIES < <(printf '%s
+' "${INTEL_TECHNOLOGIES[@]}" | sort -u && printf ' ')
+}
+
+
 modulo_version_scan() {
     [[ -z "$OPEN_PORTS_CSV" ]] && warn "Sin puertos para escanear. Saltando módulo 3." && return
+
+    # En pipeline progresivo: solo escanear puertos no procesados aún
+    local pending_csv="$OPEN_PORTS_CSV"
+    if [[ ${#PORTS_VERSION_DONE[@]} -gt 0 ]]; then
+        # Ya los procesamos en _version_scan_new_ports, solo confirmar
+        ok "Version scan: puertos ${C_YEL}${OPEN_PORTS_CSV}${C_RST} ya procesados por pipeline."
+        return
+    fi
 
     prog_modulo 3 "Service & Version Fingerprinting"
     spinner_start "Service & Version Fingerprinting"
@@ -1290,11 +2108,11 @@ modulo_gobuster() {
     # Wordlist base
     local wordlist="/usr/share/wordlists/dirb/common.txt"
     [[ -f "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt" ]] && \
-        wordlist="/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"
+        local wordlist="/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"
 
     # Si whatweb detectó un CMS, usar su wordlist específica
     if [[ -n "$INTEL_WORDLIST_EXTRA" && -f "$INTEL_WORDLIST_EXTRA" ]]; then
-        wordlist="$INTEL_WORDLIST_EXTRA"
+        local wordlist="$INTEL_WORDLIST_EXTRA"
         intel_log "Usando wordlist específica de ${INTEL_CMS}: ${wordlist}"
     fi
 
@@ -1306,20 +2124,20 @@ modulo_gobuster() {
     # Ajustar threads según WAF
     local threads=30
     if [[ "$INTEL_WAF_DETECTED" == "true" ]]; then
-        threads=5
+        local threads=5
         intel_log "WAF detectado → reduciendo threads a ${threads} para evasión"
     fi
 
     # Extensiones según tecnología detectada
     local extensions="php,html,txt,bak,old,zip,js,json,config,xml"
     if [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " aspnet " ]]; then
-        extensions="asp,aspx,config,bak,txt,xml"
+        local extensions="asp,aspx,config,bak,txt,xml"
         intel_log "ASP.NET detectado → usando extensiones: ${extensions}"
     elif [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " python " ]]; then
-        extensions="py,txt,bak,zip,json,cfg,conf"
+        local extensions="py,txt,bak,zip,json,cfg,conf"
         intel_log "Python detectado → usando extensiones: ${extensions}"
     elif [[ " ${INTEL_TECHNOLOGIES[*]} " =~ " nodejs " ]]; then
-        extensions="js,json,txt,bak,env,config"
+        local extensions="js,json,txt,bak,env,config"
         intel_log "Node.js detectado → buscando .env y configs JS"
     fi
 
@@ -1401,6 +2219,15 @@ modulo_subdominios() {
 
 # ─── MÓDULO 10: SMB ENUMERATION ─────────────────────────────────
 modulo_smb() {
+    # Skip si no hay puertos SMB/AD abiertos
+    local _has_smb=false
+    for _p in ${OPEN_PORTS_CSV//,/ }; do
+        [[ "$_p" =~ ^(445|139|389|636|88|3268|3269)$ ]] && _has_smb=true && break
+    done
+    if ! $_has_smb && [[ -n "${OPEN_PORTS_CSV:-}" ]]; then
+        intel_log "SMB: puertos 445/139/389 no detectados — módulo saltado"
+        return
+    fi
     echo "$OPEN_PORTS_CSV" | grep -qE "(445|139)" || return
     command -v enum4linux-ng >/dev/null 2>&1 || { warn "enum4linux-ng no disponible. Instala: sudo apt install enum4linux-ng"; return; }
 
@@ -2436,6 +3263,10 @@ modulo_dnsrecon() {
 
 # ─── MÓDULO 19: SSLSCAN — ANÁLISIS TLS/SSL ───────────────────────
 modulo_sslscan() {
+    if session_should_skip "sslscan"; then
+        ok "SSLScan: resultado conocido de sesión previa (sin cambios esperados)"
+        return
+    fi
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
     local has_tls=false
     for p in "${WEB_PORTS[@]}"; do [[ "$p" == "443" || "$p" == "8443" ]] && has_tls=true; done
@@ -2462,7 +3293,7 @@ modulo_sslscan() {
     fi
 
     if grep -qi "RC4\|3DES\|EXPORT\|NULL cipher" "${out_file}" 2>/dev/null; then
-        local weak; weak=$(grep -iE "RC4|3DES|EXPORT|NULL cipher" "${out_file}" | grep -iv "disabled" | head -10)
+        local weak; weak=$(grep -iE "RC4|3DES|EXPORT|NULL cipher" "${out_file}" 2>/dev/null | grep -iv "disabled" | head -10)
         [[ -n "$weak" ]] && add_finding "ALTO" "Cipher Suites Débiles" \
             "<pre>${weak}</pre>" "7.5" \
             "Usar solo ciphers modernos: TLS_AES_256_GCM_SHA384, ECDHE-RSA-AES256-GCM-SHA384" \
@@ -2586,7 +3417,7 @@ modulo_sqlmap() {
         --output-dir="${out_dir}" --timeout=30 2>/dev/null | tee "${out_dir}/output.txt"
 
     if grep -qi "is vulnerable\|parameter.*is.*injectable" "${out_dir}/output.txt" 2>/dev/null; then
-        local db_names; db_names=$(grep -A5 "available databases" "${out_dir}/output.txt" | grep "\[" | head -10)
+        local db_names; db_names=$(grep -A5 "available databases" "${out_dir}/output.txt" 2>/dev/null | grep "\[" | head -10)
         add_finding "CRÍTICO" "SQLi CONFIRMADO por sqlmap" \
             "<b>URL:</b> ${sqli_url}<br><b>BDs expuestas:</b><pre>${db_names}</pre>" \
             "9.8" \
@@ -2747,9 +3578,19 @@ except: pass
 
 # ─── MÓDULO 25: WPSCAN — WORDPRESS ───────────────────────────────
 modulo_wpscan() {
+    # Solo correr si WordPress fue detectado
+    if [[ "${INTEL_CMS:-}" != "wordpress" ]]; then
+        local _wt
+        for _wt in "${INTEL_TECHNOLOGIES[@]:-}"; do
+            [[ "${_wt,,}" == "wordpress" ]] && INTEL_CMS="wordpress" && break
+        done
+        if [[ "${INTEL_CMS:-}" != "wordpress" ]]; then
+            intel_log "WPScan: WordPress no detectado en INTEL — módulo saltado"
+            return
+        fi
+    fi
     if [[ "$INTEL_CMS" != "wordpress" ]]; then
-        prog_modulo 25 "WPScan — WordPress Audit"
-        spinner_start "WPScan — WordPress Audit"
+        intel_log "WPScan: CMS no es WordPress (${INTEL_CMS:-desconocido}) — saltando módulo"
         return
     fi
     command -v wpscan >/dev/null 2>&1 || { warn "wpscan no disponible: sudo apt install wpscan"; return; }
@@ -2768,7 +3609,7 @@ modulo_wpscan() {
         --format cli-no-colour -o "${out_file}" 2>/dev/null
 
     if [[ -s "$out_file" ]]; then
-        local wp_users; wp_users=$(grep -A2 "WordPress users" "${out_file}" | grep " - " | head -10)
+        local wp_users; wp_users=$(grep -A2 "WordPress users" "${out_file}" 2>/dev/null | grep " - " | head -10 || true)
         [[ -n "$wp_users" ]] && add_finding "ALTO" "Usuarios WordPress Enumerados" \
             "<pre>${wp_users}</pre>" "7.5" \
             "Deshabilitar enumeración: redirigir /wp-json/wp/v2/users. Usar user slugs no predecibles." \
@@ -2855,7 +3696,7 @@ modulo_smtp_enum() {
     smtp-user-enum -M VRFY -U "${wordlist}" -t "${TARGET}" 2>/dev/null | tee "${out_file}"
 
     if grep -qi "exists\|250\|valid" "${out_file}" 2>/dev/null; then
-        local valid_users; valid_users=$(grep -iE "exists|250|valid" "${out_file}" | grep -v "not exist" | head -20)
+        local valid_users; valid_users=$(grep -iE "exists|250|valid" "${out_file}" 2>/dev/null | grep -v "not exist" | head -20)
         add_finding "ALTO" "Usuarios Válidos via SMTP VRFY" \
             "<pre>${valid_users}</pre>" "7.5" \
             "Deshabilitar VRFY y EXPN en Postfix: disable_vrfy_command=yes. Revisar configuración Sendmail." \
@@ -3198,7 +4039,7 @@ modulo_lfi() {
         local ALL_LFI=("${LFI_PAYLOADS[@]}" "${INTEL_EXTRA_PAYLOADS_LFI[@]}")
         [[ ${#INTEL_EXTRA_PAYLOADS_LFI[@]} -gt 0 ]] &&             intel_log "LFI: +${#INTEL_EXTRA_PAYLOADS_LFI[@]} payloads custom"
 
-        for payload in "${ALL_LFI[@]:0:12}"; do
+        for payload in "${ALL_LFI[@]}"; do  # sin límite — usa todos los payloads incluyendo nuevos del update
             local probe_url="${test_url%=*}=${payload}"
             local response
             response=$(curl -skL --max-time 10 "$probe_url" 2>/dev/null)
@@ -3326,6 +4167,7 @@ modulo_ssrf() {
     done
 
     # Payloads SSRF para detección básica (blind + semi-blind)
+    # SSRF probes base + payloads del update/custom
     local SSRF_PROBES=(
         "http://127.0.0.1/"
         "http://localhost/"
@@ -3333,6 +4175,15 @@ modulo_ssrf() {
         "http://[::1]/"
         "http://127.1/"
         "http://2130706433/"
+        # Cloud metadata
+        "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+        "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+        # Internal services
+        "http://localhost:6379/"
+        "http://localhost:9200/"
+        "http://localhost:2375/v1.24/containers/json"
+        "${INTEL_EXTRA_PAYLOADS_SSRF[@]}"
     )
 
     local found=0
@@ -3830,6 +4681,14 @@ modulo_jwt() {
 
 # ─── MÓDULO 36: NOSQLI ───────────────────────────────────────────
 modulo_nosqli() {
+    # Optimización: skip si el stack no tiene bases NoSQL conocidas
+    local _has_nosql=false
+    for _t in "${INTEL_TECHNOLOGIES[@]:-}"; do
+        [[ "${_t,,}" =~ ^(mongodb|redis|couchdb|cassandra|dynamodb|firebase|elasticsearch)$ ]] && _has_nosql=true && break
+    done
+    if ! $_has_nosql && [[ "${INTEL_CMS:-}" != "" ]]; then
+        intel_log "NoSQLi: sin NoSQL en stack detectado — probando de todas formas (puede haber backend oculto)"
+    fi
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
     # Solo si MongoDB u otro NoSQL detectado, o si hay APIs
     local relevant=false
@@ -4403,6 +5262,17 @@ modulo_idor_redirect() {
 
 # ─── MÓDULO 41: WINDOWS IIS — ESPECÍFICO ─────────────────────────
 modulo_iis_windows() {
+    # Solo correr en targets Windows/IIS
+    if [[ "${INTEL_OS:-}" != "windows" ]]; then
+        local _has_iis=false
+        for _t in "${INTEL_TECHNOLOGIES[@]:-}"; do
+            [[ "${_t,,}" =~ ^(iis|windows|aspnet|asp\.net)$ ]] && _has_iis=true && break
+        done
+        if ! $_has_iis; then
+            intel_log "IIS/Windows: OS detectado = '${INTEL_OS:-desconocido}' — módulo saltado"
+            return
+        fi
+    fi
     [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
     # Solo ejecutar si IIS/Windows detectado
     if [[ "$INTEL_OS" != "windows" ]] && \
@@ -5193,1093 +6063,6 @@ _dn_to_fqdn() {
 }
 
 # ─── MÓDULO 45: ADPULSE — AUDITOR DE ACTIVE DIRECTORY ───────────
-modulo_adpulse() {
-    log "MÓDULO 45: ADPulse — Active Directory Security Auditor"
-    tip "Requiere: ldapsearch + credenciales de dominio de solo lectura. No modifica el AD."
-
-    # ── Verificar dependencias ───────────────────────────────────
-    local deps_ok=true
-    for dep in ldapsearch python3; do
-        command -v "$dep" >/dev/null 2>&1 || {
-            warn "Dependencia faltante: ${dep}"
-            deps_ok=false
-        }
-    done
-    if [[ "$deps_ok" == "false" ]]; then
-        warn "Instalar: sudo apt install ldap-utils python3"
-        return
-    fi
-
-    # ── Solicitar credenciales AD ────────────────────────────────
-    echo
-    echo -e "${C_PUR}  ╔════════════════════════════════════════════╗${C_RST}"
-    echo -e "${C_PUR}  ║  ADPulse — Configuración de Conexión AD    ║${C_RST}"
-    echo -e "${C_PUR}  ╚════════════════════════════════════════════╝${C_RST}"
-    echo
-    echo -e "  ${C_DIM}Requiere cuenta de solo lectura en el dominio.${C_RST}"
-    echo -e "  ${C_DIM}Ejemplo: ldapuser / ReadOnly123!${C_RST}"
-    echo
-
-    # DC IP (autodetectar si ya tenemos TARGET)
-    local default_dc="${TARGET}"
-    echo -ne "  ${C_YEL}IP del Domain Controller${C_RST} [${default_dc}]: "
-    read -r input_dc
-    AD_DC_IP="${input_dc:-$default_dc}"
-
-    echo -ne "  ${C_YEL}Dominio FQDN${C_RST} (ej: corp.local): "
-    read -r input_domain
-    AD_DOMAIN_FQDN=$(echo "${input_domain}" | tr '[:upper:]' '[:lower:]')
-    AD_DOMAIN=$(echo "${input_domain}" | tr '[:lower:]' '[:upper:]')
-
-    # Construir Base DN automáticamente
-    AD_BASE_DN=$(echo "$AD_DOMAIN_FQDN" | awk -F'.' '{for(i=1;i<=NF;i++) printf "DC="$i(i<NF?",":""); print ""}')
-    echo -e "  ${C_DIM}  Base DN detectado: ${AD_BASE_DN}${C_RST}"
-
-    echo -ne "  ${C_YEL}Usuario${C_RST} (solo nombre, ej: ldapuser): "
-    read -r input_user
-    AD_USER="$input_user"
-    AD_USER_FULL="${AD_DOMAIN}\\${AD_USER}"
-
-    echo -ne "  ${C_YEL}Contraseña${C_RST}: "
-    read -rs input_pass
-    AD_PASS="$input_pass"
-    echo
-
-    # Opción: null bind anónimo
-    echo -ne "  ${C_YEL}¿Probar también acceso anónimo (null bind)? [s/N]${C_RST}: "
-    read -r do_anon
-    local try_anon=false
-    [[ "${do_anon,,}" =~ ^(s|si|yes|y)$ ]] && try_anon=true
-
-    echo
-
-    # ── Preparar directorio de salida ────────────────────────────
-    AD_OUT_DIR="${OUTPUT_DIR}/active_directory"
-    mkdir -p "$AD_OUT_DIR"
-
-    echo "ADPulse Scan — $(date)" > "${AD_OUT_DIR}/adpulse_log.txt"
-    echo "DC: ${AD_DC_IP} | Domain: ${AD_DOMAIN_FQDN} | User: ${AD_USER}" >> "${AD_OUT_DIR}/adpulse_log.txt"
-    echo "─────────────────────────────────────────────────" >> "${AD_OUT_DIR}/adpulse_log.txt"
-
-    # ── Test de conectividad LDAP ────────────────────────────────
-    _ad_log "Probando conectividad LDAP con ${AD_DC_IP}:389..."
-    local test_conn
-    test_conn=$(ldapsearch -x -LLL \
-        -H "ldap://${AD_DC_IP}:389" \
-        -D "${AD_USER_FULL}" \
-        -w "${AD_PASS}" \
-        -b "${AD_BASE_DN}" \
-        "(objectClass=domain)" dc 2>&1 | head -5)
-
-    if echo "$test_conn" | grep -qi "result: 0\|dc:"; then
-        _ad_ok "Conexión LDAP exitosa → ${AD_DOMAIN_FQDN}"
-    elif echo "$test_conn" | grep -qi "invalid credentials\|49"; then
-        _ad_warn "Credenciales incorrectas (código 49). Continuar con lo que se pueda."
-    elif echo "$test_conn" | grep -qi "can't contact\|connection refused\|timed out"; then
-        warn "No se puede conectar a ${AD_DC_IP}:389. Verificar IP y que LDAP esté activo."
-        return
-    else
-        _ad_warn "Respuesta inesperada: ${test_conn:0:80}"
-    fi
-
-    echo
-    echo -e "${C_PUR}  ═══ Iniciando 35 checks de seguridad AD ═══${C_RST}"
-    echo
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 1: NULL BIND (acceso LDAP anónimo)
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[01/35] Null Bind — Acceso LDAP anónimo"
-    local anon_result
-    anon_result=$(_ldap_anon "(objectClass=domain)" dc 2>&1 | head -5)
-    if echo "$anon_result" | grep -qi "dc:"; then
-        _ad_crit "Null bind HABILITADO — cualquiera puede enumerar el AD sin credenciales"
-        _ad_finding "CRÍTICO" "Null Bind LDAP Habilitado" \
-            "El servidor LDAP permite consultas anónimas sin autenticación. Un atacante puede enumerar usuarios, grupos, políticas y estructura del dominio sin ninguna credencial." \
-            "9.1" \
-            "Deshabilitar acceso anónimo LDAP: Computer Configuration → Windows Settings → Security Settings → Local Policies → Security Options → 'Network access: Allow anonymous SID/Name translation' = Disabled" \
-            "ldapsearch -x -LLL -H ldap://${AD_DC_IP} -b '${AD_BASE_DN}' '(objectClass=user)' cn"
-    else
-        _ad_ok "Null bind deshabilitado (correcto)"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 2: KERBEROASTING — SPNs en cuentas de usuario
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[02/35] Kerberoasting — Cuentas con SPN"
-    local spn_file="${AD_OUT_DIR}/kerberoastable.txt"
-    local spn_data
-    spn_data=$(_ldap "(& (servicePrincipalName=*)(objectClass=user)(!(cn=krbtgt))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
-        "cn servicePrincipalName sAMAccountName userAccountControl pwdLastSet" 2>/dev/null)
-
-    echo "$spn_data" > "$spn_file"
-    local spn_count
-    spn_count=$(echo "$spn_data" | grep -c "^dn:" || echo 0)
-
-    if (( spn_count > 0 )); then
-        _ad_crit "Kerberoastable: ${spn_count} cuentas con SPN"
-        local spn_html="<table class='vuln-table'><tr><th>Usuario</th><th>SPN</th><th>PwdLastSet</th></tr>"
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^sAMAccountName:\ (.+) ]]; then
-                local sam="${BASH_REMATCH[1]}"
-                AD_KERBEROASTABLE+=("$sam")
-            fi
-            if [[ "$line" =~ ^servicePrincipalName:\ (.+) ]]; then
-                spn_html+="<tr><td><b>${sam}</b></td><td>${BASH_REMATCH[1]}</td><td>—</td></tr>"
-            fi
-        done <<< "$spn_data"
-        spn_html+="</table>"
-        spn_html+="<br><b>Hashcat:</b> <code>hashcat -m 13100 kerberoast_hashes.txt rockyou.txt --force</code>"
-
-        _ad_finding "CRÍTICO" "Kerberoasting: ${spn_count} Cuentas con SPN" \
-            "${spn_html}" "9.0" \
-            "Usar contraseñas >25 caracteres aleatorias en cuentas de servicio. Migrar a Managed Service Accounts (MSA) o Group Managed Service Accounts (gMSA). Auditar SPNs innecesarios." \
-            "impacket-GetUserSPNs ${AD_DOMAIN_FQDN}/${AD_USER}:'${AD_PASS}' -dc-ip ${AD_DC_IP} -request -outputfile ${AD_OUT_DIR}/kerberoast.hashes"
-    else
-        _ad_ok "Sin cuentas Kerberoastables"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 3: AS-REP ROASTING — cuentas sin preautenticación
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[03/35] AS-REP Roasting — Sin preautenticación Kerberos"
-    local asrep_data
-    asrep_data=$(_ldap "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))" \
-        "cn sAMAccountName" 2>/dev/null)
-    local asrep_count
-    asrep_count=$(echo "$asrep_data" | grep -c "^dn:" || echo 0)
-
-    if (( asrep_count > 0 )); then
-        _ad_crit "AS-REP Roastable: ${asrep_count} cuentas sin preauth"
-        local asrep_html="<p>Cuentas con <b>DONT_REQUIRE_PREAUTH</b> habilitado:</p><ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && {
-                AD_ASREPROASTABLE+=("${BASH_REMATCH[1]}")
-                asrep_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
-            }
-        done <<< "$asrep_data"
-        asrep_html+="</ul>"
-        asrep_html+="<b>Hashcat:</b> <code>hashcat -m 18200 asrep_hashes.txt rockyou.txt</code>"
-
-        _ad_finding "CRÍTICO" "AS-REP Roasting: ${asrep_count} Cuentas Vulnerables" \
-            "$asrep_html" "9.0" \
-            "Habilitar preautenticación Kerberos en todas las cuentas. Deshabilitar el atributo DONT_REQUIRE_PREAUTH a menos que sea estrictamente necesario." \
-            "impacket-GetNPUsers ${AD_DOMAIN_FQDN}/ -usersfile ${AD_OUT_DIR}/users.txt -format hashcat -outputfile ${AD_OUT_DIR}/asrep.hashes -dc-ip ${AD_DC_IP}"
-    else
-        _ad_ok "Sin cuentas AS-REP Roastables"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 4: UNCONSTRAINED DELEGATION
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[04/35] Unconstrained Delegation"
-    local unconstrained_data
-    unconstrained_data=$(_ldap "(&(userAccountControl:1.2.840.113556.1.4.803:=524288)(!(primaryGroupID=516))(!(primaryGroupID=521)))" \
-        "cn sAMAccountName distinguishedName" 2>/dev/null)
-    local unc_count
-    unc_count=$(echo "$unconstrained_data" | grep -c "^dn:" || echo 0)
-
-    if (( unc_count > 0 )); then
-        _ad_crit "Delegación sin restricción en ${unc_count} objeto(s)"
-        local unc_html="<p>Objetos con <b>TrustedForDelegation</b> (TRUSTED_FOR_DELEGATION):</p><ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^cn:\ (.+) ]] && {
-                AD_UNCONSTRAINED+=("${BASH_REMATCH[1]}")
-                unc_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
-            }
-        done <<< "$unconstrained_data"
-        unc_html+="</ul><p><b>Impacto:</b> Si se compromete este equipo, se pueden robar tickets TGT de cualquier usuario que se autentique en él, incluyendo Domain Admins.</p>"
-
-        _ad_finding "CRÍTICO" "Unconstrained Delegation Habilitado" \
-            "$unc_html" "9.5" \
-            "Reemplazar con Constrained Delegation (msDS-AllowedToDelegateTo) o Resource-Based Constrained Delegation (RBCD). Nunca usar TrustedForDelegation excepto en DCs." \
-            "rubeus.exe dump /service:krbtgt /nowrap  # desde el equipo comprometido con delegación"
-    else
-        _ad_ok "Sin Unconstrained Delegation (excepto DCs)"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 5: CONSTRAINED DELEGATION con protocolo S4U2Self
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[05/35] Constrained Delegation — S4U2Self/S4U2Proxy"
-    local constrained_data
-    constrained_data=$(_ldap "(msDS-AllowedToDelegateTo=*)" \
-        "cn sAMAccountName msDS-AllowedToDelegateTo userAccountControl" 2>/dev/null)
-    local con_count
-    con_count=$(echo "$constrained_data" | grep -c "^dn:" || echo 0)
-
-    if (( con_count > 0 )); then
-        _ad_warn "Constrained Delegation configurado en ${con_count} objeto(s)"
-        local con_html="<p>Objetos con Constrained Delegation (puede ser legítimo pero revisar):</p><ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^cn:\ (.+) ]] && con_html+="<li>${BASH_REMATCH[1]}</li>"
-            [[ "$line" =~ ^msDS-AllowedToDelegateTo:\ (.+) ]] && con_html+="<li style='color:#8b949e;font-size:12px;'>→ ${BASH_REMATCH[1]}</li>"
-        done <<< "$constrained_data"
-        con_html+="</ul>"
-
-        _ad_finding "MEDIO" "Constrained Delegation — Revisar Configuración" \
-            "$con_html" "6.5" \
-            "Revisar que los servicios configurados en msDS-AllowedToDelegateTo sean necesarios. Auditar si hay combinación con TRUSTED_TO_AUTH_FOR_DELEGATION (Protocol Transition)." \
-            "impacket-findDelegation ${AD_DOMAIN_FQDN}/${AD_USER}:'${AD_PASS}' -dc-ip ${AD_DC_IP}"
-    else
-        _ad_ok "Constrained Delegation: configuración limpia"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 6: CUENTAS DE DOMINIO ADMIN
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[06/35] Miembros de grupos privilegiados"
-    local priv_groups=("Domain Admins" "Enterprise Admins" "Schema Admins" "Administrators" "Account Operators" "Backup Operators")
-    local priv_html="<table class='vuln-table'><tr><th>Grupo</th><th>Miembros</th></tr>"
-    local total_priv=0
-
-    for grp in "${priv_groups[@]}"; do
-        local grp_data
-        grp_data=$(_ldap "(&(objectClass=group)(cn=${grp}))" "member" 2>/dev/null)
-        local members
-        members=$(echo "$grp_data" | grep "^member:" | wc -l)
-        ((total_priv += members))
-        (( members > 0 )) && AD_DA_MEMBERS+=("${grp}: ${members} miembros")
-
-        local color="#c9d1d9"
-        [[ "$grp" == "Domain Admins" ]] && (( members > 5 )) && color="#ff6b35"
-        [[ "$grp" == "Schema Admins" || "$grp" == "Enterprise Admins" ]] && (( members > 0 )) && color="#ff2d2d"
-
-        priv_html+="<tr><td><b>${grp}</b></td><td style='color:${color};'>${members}</td></tr>"
-    done
-    priv_html+="</table>"
-    priv_html+="<br><b>Regla:</b> Domain Admins ≤ 5, Schema Admins = 0 en prod, Enterprise Admins = 0 en prod."
-
-    local priv_sev="INFO"
-    (( total_priv > 20 )) && priv_sev="MEDIO"
-    # Check if schema/enterprise admins have members
-    echo "${AD_DA_MEMBERS[@]}" | grep -qE "Schema Admins: [^0]|Enterprise Admins: [^0]" && priv_sev="ALTO"
-
-    _ad_finding "$priv_sev" "Grupos Privilegiados — ${total_priv} Miembros Totales" \
-        "$priv_html" "7.0" \
-        "Aplicar principio de mínimo privilegio. Domain Admins: máximo 5 cuentas. Schema/Enterprise Admins: vacíos en operación normal. Usar tier model (Tier 0/1/2)." \
-        "net group 'Domain Admins' /domain | Alternativa: bloodhound-python -u USER -p PASS -d DOMAIN -c All"
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 7: KRBTGT PASSWORD AGE (Golden Ticket prevention)
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[07/35] KRBTGT — Edad de contraseña"
-    local krbtgt_data
-    krbtgt_data=$(_ldap "(cn=krbtgt)" "pwdLastSet whenCreated" 2>/dev/null)
-    local krbtgt_pwdset
-    krbtgt_pwdset=$(echo "$krbtgt_data" | grep "^pwdLastSet:" | awk '{print $2}')
-
-    if [[ -n "$krbtgt_pwdset" ]] && (( krbtgt_pwdset > 0 )); then
-        # Convertir Windows FileTime a Unix timestamp
-        local krbtgt_age_days
-        krbtgt_age_days=$(python3 -c "
-import datetime
-ft = ${krbtgt_pwdset}
-unix_ts = (ft - 116444736000000000) // 10000000
-dt = datetime.datetime.utcfromtimestamp(unix_ts)
-now = datetime.datetime.utcnow()
-print((now - dt).days)
-" 2>/dev/null || echo "999")
-
-        if (( krbtgt_age_days > 180 )); then
-            _ad_crit "KRBTGT password tiene ${krbtgt_age_days} días (>180) — Golden Ticket risk"
-            _ad_finding "CRÍTICO" "KRBTGT Password Antigua (${krbtgt_age_days} días)" \
-                "<p>La cuenta <b>krbtgt</b> no ha cambiado su contraseña en <b>${krbtgt_age_days} días</b>. Si esta contraseña fue comprometida (Golden Ticket), el atacante mantiene persistencia perpetua.</p>
-                <p><b>NIST recomienda:</b> Cambiar krbtgt cada 180 días máximo.</p>
-                <p><b>⚠ Procedimiento:</b> La contraseña debe cambiarse TWICE con intervalo de 10h entre cambios para invalidar todos los tickets.</p>" \
-                "9.8" \
-                "Cambiar contraseña krbtgt DOS VECES con 10 horas de intervalo usando Microsoft's New-KrbtgtKeys.ps1 script." \
-                "Invoke-ADServiceAccountPasswordReset -AccountName krbtgt | O usar: Reset-KrbtgtKeyInteractively.ps1"
-        elif (( krbtgt_age_days > 90 )); then
-            _ad_warn "KRBTGT: ${krbtgt_age_days} días (recomendado <90)"
-            _ad_finding "ALTO" "KRBTGT Password — ${krbtgt_age_days} días sin cambio" \
-                "<p>Recomendado cambiar cada 90 días para reducir ventana de Golden Ticket.</p>" \
-                "7.5" \
-                "Cambiar krbtgt password dos veces con intervalo de 10 horas." \
-                "New-KrbtgtKeys.ps1 -Mode ResetNow -Domain ${AD_DOMAIN_FQDN}"
-        else
-            _ad_ok "KRBTGT password: ${krbtgt_age_days} días (OK)"
-        fi
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 8: CONTRASEÑAS QUE NUNCA EXPIRAN
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[08/35] Cuentas con contraseñas que nunca expiran"
-    local noexp_data
-    noexp_data=$(_ldap "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=65536)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
-        "cn sAMAccountName" 2>/dev/null)
-    local noexp_count
-    noexp_count=$(echo "$noexp_data" | grep -c "^dn:" || echo 0)
-
-    if (( noexp_count > 0 )); then
-        _ad_warn "${noexp_count} cuentas con DONT_EXPIRE_PASSWORD"
-        local noexp_html="<p><b>${noexp_count} cuentas</b> activas con contraseña configurada para no expirar nunca:</p><ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && {
-                AD_PASS_NEVER_EXPIRES+=("${BASH_REMATCH[1]}")
-                noexp_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
-            }
-        done <<< "$noexp_data"
-        noexp_html+="</ul>"
-
-        local ne_sev="BAJO"
-        (( noexp_count > 50 )) && ne_sev="MEDIO"
-        (( noexp_count > 200 )) && ne_sev="ALTO"
-
-        _ad_finding "$ne_sev" "Contraseñas Sin Expiración — ${noexp_count} Cuentas" \
-            "$noexp_html" "5.0" \
-            "Aplicar política de expiración de contraseñas. Cuentas de servicio → usar gMSA. Usuarios → máximo 90-180 días según política." \
-            "Get-ADUser -Filter {PasswordNeverExpires -eq \$true -and Enabled -eq \$true} | Select Name"
-    else
-        _ad_ok "Sin cuentas con contraseñas sin expiración"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 9: CUENTAS INACTIVAS CON ACCESO
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[09/35] Cuentas inactivas (sin logon >90 días)"
-    local inactive_data
-    # Calcular timestamp de 90 días atrás en formato LDAP
-    local ninety_days_ago
-    ninety_days_ago=$(python3 -c "
-import datetime
-dt = datetime.datetime.utcnow() - datetime.timedelta(days=90)
-# Windows FileTime
-ft = int(dt.timestamp()) * 10000000 + 116444736000000000
-print(ft)
-" 2>/dev/null || echo "0")
-
-    if (( ninety_days_ago > 0 )); then
-        inactive_data=$(_ldap "(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))(lastLogonTimestamp<=${ninety_days_ago})(lastLogonTimestamp>=1))" \
-            "cn sAMAccountName lastLogonTimestamp" 2>/dev/null)
-        local inactive_count
-        inactive_count=$(echo "$inactive_data" | grep -c "^dn:" || echo 0)
-
-        if (( inactive_count > 0 )); then
-            _ad_warn "${inactive_count} cuentas activas sin logon en 90+ días"
-            _ad_finding "MEDIO" "Cuentas Inactivas Activas — ${inactive_count} Usuarios" \
-                "<p><b>${inactive_count} cuentas habilitadas</b> sin inicio de sesión en más de 90 días. Son vectores de ataque ideales: nadie notará el uso.</p>
-                <p>Exportado en: <code>${AD_OUT_DIR}/inactive_accounts.txt</code></p>" \
-                "5.0" \
-                "Deshabilitar cuentas inactivas >90 días. Implementar proceso de revisión de identidades trimestral (IAM lifecycle)." \
-                "Search-ADAccount -AccountInactive -TimeSpan 90.00:00:00 -UsersOnly | Disable-ADAccount"
-            echo "$inactive_data" > "${AD_OUT_DIR}/inactive_accounts.txt"
-        else
-            _ad_ok "Sin cuentas inactivas relevantes"
-        fi
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 10: POLÍTICA DE CONTRASEÑAS DEL DOMINIO
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[10/35] Política de contraseñas del dominio"
-    local pso_data
-    pso_data=$(_ldap "(objectClass=domainDNS)" \
-        "minPwdLength maxPwdAge minPwdAge lockoutThreshold pwdProperties" 2>/dev/null)
-
-    local min_len lockout_threshold pwd_props max_age
-    min_len=$(echo "$pso_data" | grep "^minPwdLength:" | awk '{print $2}' | tr -d '[:space:]')
-    lockout_threshold=$(echo "$pso_data" | grep "^lockoutThreshold:" | awk '{print $2}' | tr -d '[:space:]')
-    pwd_props=$(echo "$pso_data" | grep "^pwdProperties:" | awk '{print $2}' | tr -d '[:space:]')
-    max_age=$(echo "$pso_data" | grep "^maxPwdAge:" | awk '{print $2}' | tr -d '[:space:]')
-
-    local pwd_issues=()
-    (( ${min_len:-0} < 12 )) && pwd_issues+=("Longitud mínima = ${min_len:-?} (recomendado ≥ 12)")
-    [[ "${lockout_threshold:-0}" == "0" ]] && pwd_issues+=("Sin bloqueo por intentos fallidos (lockoutThreshold=0) → permite fuerza bruta")
-    (( ${lockout_threshold:-10} > 10 )) && pwd_issues+=("Bloqueo configurado en ${lockout_threshold} intentos (recomendado ≤ 5)")
-
-    local pwd_html="<table class='vuln-table'>"
-    pwd_html+="<tr><th>Parámetro</th><th>Valor</th><th>Estado</th></tr>"
-    pwd_html+="<tr><td>Longitud mínima</td><td>${min_len:-?}</td><td>$(( ${min_len:-0} >= 12 )) && echo '✅' || echo '⚠'</td></tr>"
-    pwd_html+="<tr><td>Bloqueo (intentos)</td><td>${lockout_threshold:-?}</td><td>$([[ "${lockout_threshold:-0}" == "0" ]] && echo '❌ Desactivado' || echo '✅')</td></tr>"
-    pwd_html+="</table>"
-
-    if (( ${#pwd_issues[@]} > 0 )); then
-        local issue_text=""
-        for issue in "${pwd_issues[@]}"; do issue_text+="<li>${issue}</li>"; done
-        pwd_html+="<ul>${issue_text}</ul>"
-
-        local pwd_sev="MEDIO"
-        [[ "${lockout_threshold:-0}" == "0" ]] && pwd_sev="ALTO"
-
-        _ad_finding "$pwd_sev" "Política de Contraseñas Débil" \
-            "$pwd_html" "6.5" \
-            "Configurar: minPwdLength ≥ 14, lockoutThreshold ≤ 5, lockoutDuration ≥ 30 min, pwdProperties incluir complejidad. Usar Fine-Grained Password Policies (PSO) para cuentas privilegiadas." \
-            "Get-ADDefaultDomainPasswordPolicy | Fine-Grained: Get-ADFineGrainedPasswordPolicy -Filter *"
-    else
-        _ad_ok "Política de contraseñas: configuración aceptable"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 11: PASS-THE-HASH — LLMNR/NBT-NS (detectar configuración)
-    # CHECK 12: ADMINCOUNT=1 sin ser admin
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[11/35] AdminCount=1 en cuentas no administradoras (SDProp abuse)"
-    local admincount_data
-    admincount_data=$(_ldap "(&(objectClass=user)(adminCount=1)(!(memberOf=CN=Domain Admins,CN=Users,${AD_BASE_DN}))(!(memberOf=CN=Administrators,CN=Builtin,${AD_BASE_DN})))" \
-        "cn sAMAccountName" 2>/dev/null)
-    local admincount_num
-    admincount_num=$(echo "$admincount_data" | grep -c "^dn:" || echo 0)
-
-    if (( admincount_num > 0 )); then
-        _ad_warn "${admincount_num} cuentas con adminCount=1 sin ser admins actuales"
-        local ac_html="<p><b>${admincount_num} cuentas</b> tienen adminCount=1 pero no pertenecen a grupos admin actuales. Esto indica que fueron admins anteriormente y heredaron ACLs privilegiadas que NO se limpiaron (SDProp no revirtió los permisos).</p><ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && ac_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
-        done <<< "$admincount_data"
-        ac_html+="</ul>"
-
-        _ad_finding "ALTO" "AdminCount=1 Sin Membresía Admin — ${admincount_num} Cuentas" \
-            "$ac_html" "7.5" \
-            "Resetear adminCount a 0 y corregir ACLs en el objeto. Limpiar ACEs huérfanas con: Get-ObjectAcl y Remove-ObjectAcl en PowerView." \
-            "Get-ADUser -LDAPFilter '(adminCount=1)' | Get-ObjectAcl -ResolveGUIDs | ?{_.ActiveDirectoryRights -match 'Write'}"
-    else
-        _ad_ok "adminCount consistente"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 13: PASSWORD IN DESCRIPTION
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[12/35] Contraseñas en atributo Description"
-    local pwddesc_data
-    pwddesc_data=$(_ldap "(&(objectClass=user)(description=*pass*))" "cn sAMAccountName description" 2>/dev/null)
-    pwddesc_data+=$'\n'
-    pwddesc_data+=$(_ldap "(&(objectClass=user)(description=*pwd*))" "cn sAMAccountName description" 2>/dev/null)
-    pwddesc_data+=$'\n'
-    pwddesc_data+=$(_ldap "(&(objectClass=user)(description=*password*))" "cn sAMAccountName description" 2>/dev/null)
-
-    local pwddesc_count
-    pwddesc_count=$(echo "$pwddesc_data" | grep -c "^dn:" || echo 0)
-
-    if (( pwddesc_count > 0 )); then
-        _ad_crit "Posibles credenciales en campo Description: ${pwddesc_count} cuentas"
-        local pwddesc_html="<p>Cuentas con palabras clave de contraseña en su descripción:</p><ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && local sam_tmp="${BASH_REMATCH[1]}"
-            [[ "$line" =~ ^description:\ (.+) ]] && pwddesc_html+="<li><b>${sam_tmp}</b>: <code>${BASH_REMATCH[1]}</code></li>"
-        done <<< "$pwddesc_data"
-        pwddesc_html+="</ul>"
-
-        _ad_finding "CRÍTICO" "Contraseñas en Descripción de Cuentas AD" \
-            "$pwddesc_html" "9.0" \
-            "Eliminar inmediatamente contraseñas de los campos Description. Cambiar contraseñas expuestas. Auditar todos los atributos LDAP accesibles (info, comment, wWWHomePage)." \
-            "_ldap '(description=*pass*)' 'sAMAccountName description'"
-    else
-        _ad_ok "Sin contraseñas en Description"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 14: DCSYNC RIGHTS (usuarios con replication permissions)
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[13/35] DCSync — Permisos de replicación en usuarios no-DC"
-    # Buscar ACEs con DS-Replication-Get-Changes en el objeto dominio
-    local dcsync_check
-    dcsync_check=$(python3 - << 'PYDCSYNC' 2>/dev/null
-import subprocess
-# Check who has Replicating Directory Changes permission via ldapsearch
-# The GUID for DS-Replication-Get-Changes is 1131f6aa-9c07-11d1-f79f-00c04fc2dcd2
-result = subprocess.run([
-    'ldapsearch', '-x', '-LLL',
-    '-H', f'ldap://${AD_DC_IP}:389',
-    '-D', '${AD_USER_FULL}',
-    '-w', '${AD_PASS}',
-    '-b', '${AD_BASE_DN}',
-    '-s', 'base',
-    '(objectClass=*)', 'nTSecurityDescriptor'
-], capture_output=True, text=True, timeout=15)
-# If we can't parse SD, just note the limitation
-if result.returncode == 0:
-    print("ACCESSIBLE")
-else:
-    print("DENIED")
-PYDCSYNC
-)
-
-    if [[ "$dcsync_check" == "ACCESSIBLE" ]]; then
-        _ad_warn "Verificar permisos DCSync manualmente (requiere análisis de ACL)"
-        _ad_finding "INFO" "DCSync — Verificación Manual Requerida" \
-            "<p>Los permisos DCSync (DS-Replication-Get-Changes-All) deben verificarse con BloodHound o PowerView ya que requieren parseo del Security Descriptor binario.</p>
-            <code>Get-ObjectAcl -DistinguishedName '${AD_BASE_DN}' -ResolveGUIDs | ?{\\$_.ObjectAceType -match 'Replication'}</code>" \
-            "N/A" \
-            "Solo Domain Controllers y administradores delegados deben tener permisos de replicación." \
-            "bloodhound-python -u ${AD_USER} -p '${AD_PASS}' -d ${AD_DOMAIN_FQDN} -c DCOnly"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 15: LAPS — Local Admin Password Solution
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[14/35] LAPS — Local Administrator Password Solution"
-    local laps_data
-    laps_data=$(_ldap "(objectClass=computer)" "ms-Mcs-AdmPwd ms-Mcs-AdmPwdExpirationTime cn" 2>/dev/null)
-    local total_computers laps_computers
-    total_computers=$(echo "$laps_data" | grep -c "^dn:" || echo 0)
-    laps_computers=$(echo "$laps_data" | grep -c "^ms-Mcs-AdmPwd:" || echo 0)
-
-    local laps_readable
-    laps_readable=$(echo "$laps_data" | grep "^ms-Mcs-AdmPwd:" | grep -v "^ms-Mcs-AdmPwd: $" | wc -l)
-
-    if (( total_computers > 0 && laps_computers == 0 )); then
-        _ad_crit "LAPS NO instalado en ninguno de los ${total_computers} equipos"
-        _ad_finding "ALTO" "LAPS No Implementado — ${total_computers} Equipos Sin Protección" \
-            "<p>LAPS (Local Administrator Password Solution) <b>no está instalado</b>. Todos los equipos probablemente comparten la misma contraseña de administrador local, lo que permite movimiento lateral masivo tras comprometer un equipo.</p>
-            <p><b>Total equipos:</b> ${total_computers}</p>" \
-            "8.0" \
-            "Implementar LAPS o Windows LAPS (nativo en Windows Server 2022/Windows 11 22H2+). Configurar GPO para rotación automática de contraseñas." \
-            "Install-Module LAPS | Get-LAPSComputers | find /v '' %windir%\\system32\\drivers\\Microsoft\\\\LocalAdministratorPasswordSolution.dll"
-    elif (( laps_readable > 0 )); then
-        _ad_warn "${laps_readable} contraseñas LAPS son LEGIBLES por el usuario actual"
-        _ad_finding "ALTO" "Contraseñas LAPS Legibles — ${laps_readable} Equipos" \
-            "<p>El usuario <b>${AD_USER}</b> puede leer contraseñas LAPS de ${laps_readable} equipos. Esto puede ser excesivo si el usuario no es admin delegado.</p>" \
-            "7.5" \
-            "Revisar ACLs sobre ms-Mcs-AdmPwd. Solo admins IT y cuentas de helpdesk deben poder leer LAPS passwords." \
-            "Find-AdmPwdExtendedRights -Identity '${AD_BASE_DN}'"
-    else
-        _ad_ok "LAPS instalado y contraseñas protegidas"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 16-19: ADCS — Active Directory Certificate Services
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[15/35] ADCS — Certificate Templates vulnerables (ESC1-ESC8)"
-    local adcs_base="CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,${AD_BASE_DN}"
-
-    # ESC1: Template con enrollee supplies subject + clientAuth EKU
-    local esc1_data
-    esc1_data=$(ldapsearch -x -LLL \
-        -H "ldap://${AD_DC_IP}:389" \
-        -D "${AD_USER_FULL}" \
-        -w "${AD_PASS}" \
-        -b "${adcs_base}" \
-        "(&(objectClass=pKICertificateTemplate)(msPKI-Certificate-Name-Flag:1.2.840.113556.1.4.803:=1)(msPKI-Enrollment-Flag:1.2.840.113556.1.4.803:=2))" \
-        "cn msPKI-Certificate-Name-Flag msPKI-RA-Signature pKIExtendedKeyUsage" 2>/dev/null)
-
-    local esc1_count
-    esc1_count=$(echo "$esc1_data" | grep -c "^dn:" || echo 0)
-
-    if (( esc1_count > 0 )); then
-        _ad_crit "ESC1: ${esc1_count} templates ADCS vulnerables a impersonation"
-        local esc1_html="<p><b>ESC1 — Enrollee Supplies Subject + Client Auth:</b> Un atacante puede solicitar un certificado con cualquier SAN (Subject Alternative Name), incluyendo Domain Admin, para autenticarse como cualquier usuario.</p>"
-        esc1_html+="<ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^cn:\ (.+) ]] && {
-                AD_ADCS_TEMPLATES+=("ESC1:${BASH_REMATCH[1]}")
-                esc1_html+="<li>Template: <b>${BASH_REMATCH[1]}</b></li>"
-            }
-        done <<< "$esc1_data"
-        esc1_html+="</ul>"
-        esc1_html+="<p><code>certipy req -u USER@${AD_DOMAIN_FQDN} -p PASS -ca CA-NAME -template TEMPLATE -upn administrator@${AD_DOMAIN_FQDN} -dc-ip ${AD_DC_IP}</code></p>"
-
-        _ad_finding "CRÍTICO" "ADCS ESC1 — ${esc1_count} Templates Vulnerables" \
-            "$esc1_html" "9.8" \
-            "Deshabilitar CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT en los templates (msPKI-Certificate-Name-Flag). Si es necesario para uso legítimo, requerir aprobación de CA (CA Manager Approval)." \
-            "certipy find -u ${AD_USER}@${AD_DOMAIN_FQDN} -p '${AD_PASS}' -dc-ip ${AD_DC_IP} -vulnerable -stdout"
-    else
-        _ad_ok "ADCS ESC1: sin templates vulnerables"
-    fi
-
-    # ESC2 y ESC3 detection (Any Purpose EKU)
-    _ad_log "[16/35] ADCS ESC2/ESC3 — Any Purpose EKU"
-    local esc2_data
-    esc2_data=$(ldapsearch -x -LLL \
-        -H "ldap://${AD_DC_IP}:389" \
-        -D "${AD_USER_FULL}" \
-        -w "${AD_PASS}" \
-        -b "${adcs_base}" \
-        "(&(objectClass=pKICertificateTemplate)(pKIExtendedKeyUsage=2.5.29.37.0))" \
-        "cn pKIExtendedKeyUsage" 2>/dev/null)
-    local esc2_count
-    esc2_count=$(echo "$esc2_data" | grep -c "^dn:" || echo 0)
-
-    if (( esc2_count > 0 )); then
-        _ad_crit "ESC2: ${esc2_count} templates con Any Purpose EKU"
-        local esc2_html="<p><b>ESC2</b> — Templates con <b>Any Purpose EKU</b> (2.5.29.37.0). Permite usar el certificado para autenticación de cliente aunque no esté declarado explícitamente.</p>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^cn:\ (.+) ]] && {
-                AD_ADCS_TEMPLATES+=("ESC2:${BASH_REMATCH[1]}")
-                esc2_html+="<li>Template: <b>${BASH_REMATCH[1]}</b></li>"
-            }
-        done <<< "$esc2_data"
-
-        _ad_finding "CRÍTICO" "ADCS ESC2 — Any Purpose EKU en ${esc2_count} Templates" \
-            "$esc2_html" "9.5" \
-            "Eliminar el OID 2.5.29.37.0 de pKIExtendedKeyUsage. Reemplazar con EKUs específicos necesarios." \
-            "certipy find -u ${AD_USER}@${AD_DOMAIN_FQDN} -p '${AD_PASS}' -dc-ip ${AD_DC_IP} -vulnerable"
-    else
-        _ad_ok "ADCS ESC2: sin templates Any Purpose"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 17: GUEST ACCOUNT HABILITADO
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[17/35] Cuenta Guest habilitada"
-    local guest_data
-    guest_data=$(_ldap "(&(objectClass=user)(cn=Guest)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
-        "cn userAccountControl" 2>/dev/null)
-
-    if echo "$guest_data" | grep -q "^dn:"; then
-        _ad_crit "Cuenta Guest HABILITADA"
-        _ad_finding "ALTO" "Cuenta Guest Habilitada en el Dominio" \
-            "<p>La cuenta <b>Guest</b> está habilitada. Esta cuenta permite acceso anónimo básico y es frecuentemente usada en ataques de reconocimiento inicial.</p>" \
-            "7.0" \
-            "Deshabilitar la cuenta Guest: Disable-ADAccount -Identity Guest" \
-            "Disable-ADAccount -Identity 'Guest' -Server ${AD_DC_IP}"
-    else
-        _ad_ok "Cuenta Guest deshabilitada (correcto)"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 18: SMB SIGNING (requiere nmap si disponible)
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[18/35] SMB Signing — Protección contra NTLM Relay"
-    if command -v nmap >/dev/null 2>&1; then
-        local smb_signing
-        smb_signing=$(nmap -p 445 --script smb2-security-mode "${AD_DC_IP}" 2>/dev/null | \
-            grep -i "message signing")
-
-        if echo "$smb_signing" | grep -qi "required"; then
-            _ad_ok "SMB Signing requerido en DC (correcto)"
-        elif echo "$smb_signing" | grep -qi "enabled but not required"; then
-            _ad_crit "SMB Signing habilitado pero NO requerido → NTLM Relay posible"
-            _ad_finding "CRÍTICO" "SMB Signing No Requerido — NTLM Relay Attack" \
-                "<p>SMB Signing está habilitado pero no es obligatorio. Esto permite ataques <b>NTLM Relay</b> (responder + ntlmrelayx) para comprometer equipos sin crackear hashes.</p>
-                <p>Resultado nmap: <code>${smb_signing}</code></p>" \
-                "9.0" \
-                "GPO: Computer Configuration → Windows Settings → Security Settings → Local Policies → Security Options → 'Microsoft network server: Digitally sign communications (always)' = Enabled" \
-                "nmap --script smb2-security-mode -p 445 ${AD_DC_IP} | responder -I eth0 -rdw + ntlmrelayx.py -smb2support -t smb://${AD_DC_IP}"
-        fi
-    else
-        _ad_log "nmap no disponible, verificar SMB Signing manualmente"
-        _ad_finding "INFO" "SMB Signing — Verificación Manual" \
-            "<p>nmap no disponible. Verificar manualmente con: <code>nmap -p445 --script smb2-security-mode ${AD_DC_IP}</code></p>" \
-            "N/A" "Instalar nmap para verificación automática." \
-            "nmap -p 445 --script smb2-security-mode ${AD_DC_IP}"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 19: LDAP SIGNING / CHANNEL BINDING
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[19/35] LDAP Signing — Channel Binding"
-    local ldap_no_sign
-    ldap_no_sign=$(ldapsearch -x -LLL \
-        -H "ldap://${AD_DC_IP}:389" \
-        -D "${AD_USER_FULL}" \
-        -w "${AD_PASS}" \
-        -b "" \
-        -s base \
-        "(objectClass=*)" supportedCapabilities 2>&1)
-
-    # Si podemos conectar sin SSL en puerto 389 con credenciales en claro → signing débil
-    if echo "$ldap_no_sign" | grep -qi "supportedCapabilities\|supported"; then
-        _ad_warn "LDAP en puerto 389 acepta autenticación sin signing"
-        _ad_finding "MEDIO" "LDAP Signing No Enforced — Posible LDAP Relay" \
-            "<p>El servidor acepta autenticación LDAP en texto claro (puerto 389) sin requerir LDAP Signing. Esto puede permitir ataques de LDAP Relay.</p>
-            <p>Verificar con: <code>LdapRelayScan.py -u ${AD_USER} -p PASS -d ${AD_DC_IP}</code></p>" \
-            "6.5" \
-            "Configurar LDAP Signing requerido: Group Policy → Computer Configuration → Windows Settings → Security Settings → Local Policies → Security Options → 'Domain controller: LDAP server signing requirements' = Require signing" \
-            "LdapRelayScan.py -method BOTH -u ${AD_USER} -p '${AD_PASS}' ${AD_DC_IP}"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 20: USUARIOS EN GRUPO PROTEGIDO (Protected Users)
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[20/35] Protected Users group — cuentas privilegiadas sin protección"
-    local protusers_data
-    protusers_data=$(_ldap "(cn=Protected Users)" "member" 2>/dev/null)
-    local prot_members
-    prot_members=$(echo "$protusers_data" | grep -c "^member:")
-
-    local da_count="${#AD_DA_MEMBERS[@]}"
-    if (( prot_members < da_count )); then
-        _ad_warn "Solo ${prot_members} en Protected Users pero hay más admins"
-        _ad_finding "MEDIO" "Cuentas Privilegiadas Fuera de Protected Users" \
-            "<p>El grupo <b>Protected Users</b> tiene solo <b>${prot_members} miembros</b>. Todos los Domain Admins y cuentas de Tier-0 deberían estar aquí para prevenir Pass-the-Hash, Pass-the-Ticket, y delegación de credenciales.</p>
-            <p><b>Beneficios del grupo:</b> Sin NTLM, sin DES/RC4 Kerberos, sin unconstrained delegation, Kerberos tickets TTL máximo 4h.</p>" \
-            "6.0" \
-            "Agregar todos los Domain Admins al grupo Protected Users. Probar antes en staging ya que rompe algunas aplicaciones legadas que usan NTLM." \
-            "Add-ADGroupMember -Identity 'Protected Users' -Members (Get-ADGroupMember 'Domain Admins').SamAccountName"
-    else
-        _ad_ok "Protected Users group correctamente poblado"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 21: DOMAIN TRUSTS — relaciones de confianza
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[21/35] Domain Trusts — Relaciones de confianza"
-    local trust_data
-    trust_data=$(_ldap "(objectClass=trustedDomain)" \
-        "cn trustDirection trustType trustAttributes flatName" 2>/dev/null)
-    local trust_count
-    trust_count=$(echo "$trust_data" | grep -c "^dn:" || echo 0)
-
-    if (( trust_count > 0 )); then
-        local trust_html="<p><b>${trust_count} trust(s)</b> configurados:</p><table class='vuln-table'><tr><th>Dominio</th><th>Dirección</th><th>Tipo</th><th>Atributos</th></tr>"
-        local cn="" direction="" ttype="" tattrs=""
-        while IFS= read -r line; do
-            [[ "$line" =~ ^cn:\ (.+)  ]]              && cn="${BASH_REMATCH[1]}"
-            [[ "$line" =~ ^trustDirection:\ (.+) ]]   && direction="${BASH_REMATCH[1]}"
-            [[ "$line" =~ ^trustType:\ (.+) ]]         && ttype="${BASH_REMATCH[1]}"
-            [[ "$line" =~ ^trustAttributes:\ (.+) ]]  && tattrs="${BASH_REMATCH[1]}"
-            [[ "$line" =~ ^flatName:\ (.+) ]] && {
-                # Calcular riesgo del trust
-                local trust_risk="✅"
-                # direction: 1=inbound, 2=outbound, 3=bidirectional
-                [[ "$direction" == "3" ]] && trust_risk="⚠ Bidireccional"
-                # 8 = TREAT_AS_EXTERNAL, 32 = ENABLE_TGT_DELEGATION
-                (( (${tattrs:-0} & 32) > 0 )) && trust_risk="❌ TGT Delegation activo"
-                trust_html+="<tr><td>${cn}</td><td>${direction} ($(( direction==3 )) && echo 'Bidireccional' || echo 'Unidireccional')</td><td>${ttype}</td><td>${tattrs} ${trust_risk}</td></tr>"
-            }
-        done <<< "$trust_data"
-        trust_html+="</table>"
-
-        local trust_sev="INFO"
-        echo "$trust_data" | grep "trustAttributes:" | awk '{print $2}' | while read -r ta; do
-            (( (${ta:-0} & 32) > 0 )) && trust_sev="ALTO" && break
-        done
-
-        _ad_finding "${trust_sev}" "Domain Trusts — ${trust_count} Relaciones Detectadas" \
-            "$trust_html" "6.5" \
-            "Auditar todos los trusts. Eliminar trusts innecesarios. Evitar TGT Delegation en trusts externos. Usar SID Filtering en todos los trusts externos." \
-            "impacket-GetDomainTrusts ${AD_DOMAIN_FQDN}/${AD_USER}:'${AD_PASS}' -dc-ip ${AD_DC_IP}"
-    else
-        _ad_ok "Sin domain trusts configurados"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 22: GPOs — Objetos de política con permisos débiles
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[22/35] GPOs — Enumeración y permisos"
-    local gpo_data
-    gpo_data=$(_ldap "(objectClass=groupPolicyContainer)" \
-        "cn displayName gPCFileSysPath" 2>/dev/null)
-    local gpo_count
-    gpo_count=$(echo "$gpo_data" | grep -c "^dn:" || echo 0)
-
-    _ad_finding "INFO" "GPOs — ${gpo_count} Políticas Detectadas" \
-        "<p>Se detectaron <b>${gpo_count} GPOs</b> en el dominio. Verificar manualmente permisos de escritura en GPOs con BloodHound o PowerView.</p>
-        <p>GPOs con <i>Write</i> para usuarios no-admin = escalada a DA.</p>
-        <p>Exportado en: <code>${AD_OUT_DIR}/gpos.txt</code></p>" \
-        "N/A" \
-        "Revisar permisos de GPOs: Get-GPPermission -All -GUID * | ?{\\$_.Permission -eq 'GpoEditDeleteModifySecurity'}" \
-        "bloodhound: GPO → 'GPOs where X can modify' | PowerView: Get-GPPermission"
-    echo "$gpo_data" > "${AD_OUT_DIR}/gpos.txt"
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 23: PASSWORD SPRAY PROTECTION — Fine-Grained Policies
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[23/35] Fine-Grained Password Policies (PSO)"
-    local pso_data2
-    pso_data2=$(_ldap "(objectClass=msDS-PasswordSettings)" \
-        "cn msDS-LockoutThreshold msDS-MinimumPasswordLength msDS-PasswordSettingsPrecedence" 2>/dev/null)
-    local pso_count
-    pso_count=$(echo "$pso_data2" | grep -c "^dn:" || echo 0)
-
-    if (( pso_count == 0 )); then
-        _ad_finding "BAJO" "Sin Fine-Grained Password Policies (PSO)" \
-            "<p>No hay políticas de contraseñas granulares configuradas. Las cuentas privilegiadas deberían tener una PSO con requisitos más estrictos que la política de dominio por defecto.</p>" \
-            "3.0" \
-            "Crear PSOs para: Domain Admins (longitud ≥20, bloqueo a los 3 intentos), Service Accounts (contraseñas >25 chars, sin expiración + monitoreo de uso)." \
-            "New-ADFineGrainedPasswordPolicy -Name 'AdminPSO' -Precedence 1 -MinPasswordLength 20 -LockoutThreshold 3"
-    else
-        _ad_ok "${pso_count} Fine-Grained Password Policies configuradas"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 24: CUENTAS CON HISTORIAL DE CONTRASEÑAS CORTO
-    # CHECK 25: DOMINIO EN MODO FUNCIONAL ANTIGUO
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[24/35] Nivel funcional del dominio"
-    local func_level_data
-    func_level_data=$(_ldap "(objectClass=domainDNS)" "msDS-Behavior-Version domainFunctionality" 2>/dev/null)
-    local func_level
-    func_level=$(echo "$func_level_data" | grep -E "^msDS-Behavior-Version:|^domainFunctionality:" | awk '{print $2}' | head -1)
-
-    # Niveles: 0=2000, 1=2003, 2=2003, 3=2008, 4=2008R2, 5=2012, 6=2012R2, 7=2016, 10=2025
-    if (( ${func_level:-7} < 5 )); then
-        _ad_warn "Nivel funcional antiguo: ${func_level} (< Windows Server 2012)"
-        _ad_finding "MEDIO" "Nivel Funcional del Dominio Obsoleto (${func_level})" \
-            "<p>El dominio opera en nivel funcional <b>${func_level}</b>. Los niveles bajos deshabilitan funciones de seguridad modernas como Protected Users group, Authentication Policies, y claims-based access control.</p>
-            <table class='vuln-table'><tr><th>Nivel</th><th>Windows Server</th><th>Estado</th></tr>
-            <tr><td>0-3</td><td>2000-2008</td><td style='color:#ff2d2d'>❌ Crítico</td></tr>
-            <tr><td>4-5</td><td>2008R2-2012</td><td style='color:#ff6b35'>⚠ Obsoleto</td></tr>
-            <tr><td>6-7</td><td>2012R2-2016</td><td style='color:#ffd23f'>~ Aceptable</td></tr>
-            <tr><td>10</td><td>2025</td><td style='color:#3fb950'>✅ Actual</td></tr></table>" \
-            "5.0" \
-            "Elevar nivel funcional del dominio. Requiere que todos los DCs estén en la versión objetivo." \
-            "Set-ADDomainMode -Identity ${AD_DOMAIN_FQDN} -DomainMode Windows2016Domain"
-    else
-        _ad_ok "Nivel funcional del dominio: ${func_level} (moderno)"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 26: CUENTAS DE MÁQUINA (Excessive Machine Account Quota)
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[25/35] ms-DS-MachineAccountQuota — Creación de cuentas de máquina"
-    local maq_data
-    maq_data=$(_ldap "(objectClass=domainDNS)" "ms-DS-MachineAccountQuota" 2>/dev/null)
-    local maq_value
-    maq_value=$(echo "$maq_data" | grep "^ms-DS-MachineAccountQuota:" | awk '{print $2}')
-
-    if (( ${maq_value:-10} > 0 )); then
-        _ad_warn "ms-DS-MachineAccountQuota = ${maq_value:-10} → cualquier usuario puede unir equipos al dominio"
-        _ad_finding "ALTO" "MachineAccountQuota = ${maq_value:-10} — RBCD / Resource-Based Constrained Delegation" \
-            "<p>El valor <b>ms-DS-MachineAccountQuota = ${maq_value:-10}</b> permite que cualquier usuario autenticado cree hasta ${maq_value:-10} cuentas de máquina en el dominio.</p>
-            <p><b>Impacto:</b> En combinación con un equipo vulnerable a RBCD, permite escalada de privilegios completa sin necesidad de comprometer ninguna cuenta de servicio.</p>
-            <p><b>Ataque:</b> impacket-addcomputer → impacket-rbcd → impacket-getST → Pass-the-Ticket → DA</p>" \
-            "8.5" \
-            "Configurar ms-DS-MachineAccountQuota = 0. Usar cuentas delegadas específicas para unir equipos al dominio." \
-            "Set-ADDomain -Identity ${AD_DOMAIN_FQDN} -Replace @{'ms-DS-MachineAccountQuota'='0'}"
-    else
-        _ad_ok "ms-DS-MachineAccountQuota = 0 (correcto)"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 27-28: GROUPS — Generic All / Write sobre objetos sensibles
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[26/35] Grupos nested peligrosos"
-    local nested_html="<p>Grupos que contienen otros grupos con acceso a recursos críticos:</p><ul>"
-    local nested_found=false
-
-    # Buscar grupos que sean miembros de Domain Admins (grupos dentro de grupos = escalada)
-    local nested_data
-    nested_data=$(_ldap "(&(objectClass=group)(memberOf=CN=Domain Admins,CN=Users,${AD_BASE_DN}))" \
-        "cn distinguishedName" 2>/dev/null)
-
-    if echo "$nested_data" | grep -q "^dn:"; then
-        nested_found=true
-        while IFS= read -r line; do
-            [[ "$line" =~ ^cn:\ (.+) ]] && nested_html+="<li>Grupo <b>${BASH_REMATCH[1]}</b> es miembro de Domain Admins</li>"
-        done <<< "$nested_data"
-    fi
-    nested_html+="</ul>"
-
-    if [[ "$nested_found" == "true" ]]; then
-        _ad_finding "ALTO" "Grupos Nested en Domain Admins Detectados" \
-            "$nested_html" "7.5" \
-            "Domain Admins no debería contener grupos, solo usuarios directos. Aplanar la membresía y eliminar grupos anidados." \
-            "Get-ADGroupMember 'Domain Admins' -Recursive | ?{\\$_.objectClass -eq 'group'}"
-    else
-        _ad_ok "Sin grupos nested peligrosos en Domain Admins"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 29: CUENTAS ADMINISTRATIVAS QUE USAN EMAIL CORPORATIVO
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[27/35] Separación de cuentas admin vs cuentas de usuario"
-    local da_with_email
-    da_with_email=$(_ldap "(&(objectClass=user)(memberOf=CN=Domain Admins,CN=Users,${AD_BASE_DN})(mail=*))" \
-        "cn sAMAccountName mail" 2>/dev/null)
-    local dae_count
-    dae_count=$(echo "$da_with_email" | grep -c "^dn:" || echo 0)
-
-    if (( dae_count > 0 )); then
-        _ad_warn "${dae_count} Domain Admins tienen email asociado (posible cuenta dual-use)"
-        _ad_finding "MEDIO" "Domain Admins Con Email — Posible Cuenta Dual-Use" \
-            "<p><b>${dae_count} cuentas de Domain Admin</b> tienen dirección de email configurada, lo que sugiere que se usan para trabajo diario Y tareas administrativas.</p>
-            <p><b>Riesgo:</b> Phishing, credential stuffing y browser-based attacks pueden comprometer credenciales de DA directamente.</p>" \
-            "6.0" \
-            "Separar cuentas: cuenta normal (correo, navegación) + cuenta admin dedicada (solo para tareas admin, sin email, sin internet). Implementar PAW (Privileged Access Workstations)." \
-            "Get-ADGroupMember 'Domain Admins' | Get-ADUser -Properties mail | ?{\\$_.mail}"
-    else
-        _ad_ok "Domain Admins sin email (cuentas dedicadas correctamente separadas)"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 30: RECYCLE BIN DE AD HABILITADO
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[28/35] AD Recycle Bin habilitado"
-    local rb_data
-    rb_data=$(ldapsearch -x -LLL \
-        -H "ldap://${AD_DC_IP}:389" \
-        -D "${AD_USER_FULL}" \
-        -w "${AD_PASS}" \
-        -b "CN=Recycle Bin Feature,CN=Optional Features,CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,${AD_BASE_DN}" \
-        "(objectClass=*)" cn msDS-EnabledFeatureBL 2>/dev/null)
-
-    if echo "$rb_data" | grep -qi "Recycle Bin"; then
-        _ad_ok "AD Recycle Bin habilitado (correcto — permite recuperación de objetos)"
-    else
-        _ad_finding "BAJO" "AD Recycle Bin No Habilitado" \
-            "<p>El Recycle Bin de Active Directory no está habilitado. Sin él, los objetos eliminados (usuarios, grupos, OUs) no pueden recuperarse fácilmente.</p>" \
-            "2.0" \
-            "Habilitar: Enable-ADOptionalFeature 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target ${AD_DOMAIN_FQDN}" \
-            "Enable-ADOptionalFeature -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target ${AD_DOMAIN_FQDN}"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 31: AUDITORÍA — Audit Policy configurada
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[29/35] Audit Policy — Configuración de auditoría"
-    # Verificar si hay GPO de auditoría avanzada configurada
-    local audit_gpo
-    audit_gpo=$(ldapsearch -x -LLL \
-        -H "ldap://${AD_DC_IP}:389" \
-        -D "${AD_USER_FULL}" \
-        -w "${AD_PASS}" \
-        -b "CN=Policies,CN=System,${AD_BASE_DN}" \
-        "(displayName=*Audit*)" cn displayName 2>/dev/null | grep -c "^dn:" || echo 0)
-
-    if (( audit_gpo == 0 )); then
-        _ad_finding "MEDIO" "Sin GPO de Auditoría Avanzada Detectada" \
-            "<p>No se detectaron GPOs con nombre relacionado a auditoría. Sin auditoría correcta:</p>
-            <ul><li>No hay logs de Logon/Logoff (Event 4624/4625)</li>
-            <li>No hay detección de Kerberoasting (Event 4769)</li>
-            <li>No hay alertas de DCSync (Event 4662)</li>
-            <li>No hay logs de Process Creation (Event 4688)</li></ul>" \
-            "5.5" \
-            "Implementar GPO de Advanced Audit Policy Configuration con: Account Logon, Account Management, DS Access, Logon/Logoff, Object Access, Policy Change, Privilege Use, System." \
-            "auditpol /get /category:* | Get-AuditPolicy -All"
-    else
-        _ad_ok "GPO de auditoría detectada"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 32: USUARIOS CON PASSWORD NOT REQUIRED
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[30/35] Cuentas con PASSWD_NOTREQD"
-    local notreq_data
-    notreq_data=$(_ldap "(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))" \
-        "cn sAMAccountName" 2>/dev/null)
-    local notreq_count
-    notreq_count=$(echo "$notreq_data" | grep -c "^dn:" || echo 0)
-
-    if (( notreq_count > 0 )); then
-        _ad_crit "${notreq_count} cuentas activas con PASSWD_NOTREQD"
-        local notreq_html="<p><b>${notreq_count} cuentas activas</b> con el flag <b>PASSWD_NOTREQD</b>. Estas cuentas pueden tener contraseña vacía o sin requisitos de complejidad.</p><ul>"
-        while IFS= read -r line; do
-            [[ "$line" =~ ^sAMAccountName:\ (.+) ]] && notreq_html+="<li><code>${BASH_REMATCH[1]}</code></li>"
-        done <<< "$notreq_data"
-        notreq_html+="</ul>"
-
-        _ad_finding "CRÍTICO" "PASSWD_NOTREQD — ${notreq_count} Cuentas Sin Contraseña Obligatoria" \
-            "$notreq_html" "9.0" \
-            "Remover flag PASSWD_NOTREQD de todas las cuentas. Verificar si tienen contraseña vacía. Cambiar contraseñas y aplicar política." \
-            "Get-ADUser -LDAPFilter '(userAccountControl:1.2.840.113556.1.4.803:=32)' | Set-ADUser -Replace @{userAccountControl=512}"
-    else
-        _ad_ok "Sin cuentas PASSWD_NOTREQD"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 33: BLOODHOUND DATA COLLECTION (si disponible)
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[31/35] BloodHound — Recolección de datos de ataque paths"
-    if python3 -c "import bloodhound" 2>/dev/null || command -v bloodhound-python >/dev/null 2>&1; then
-        _ad_log "bloodhound-python disponible → recolectando..."
-        local bh_cmd="bloodhound-python"
-        command -v bloodhound-python >/dev/null 2>&1 || bh_cmd="python3 -m bloodhound"
-
-        "$bh_cmd" \
-            -u "${AD_USER}" \
-            -p "${AD_PASS}" \
-            -d "${AD_DOMAIN_FQDN}" \
-            -ns "${AD_DC_IP}" \
-            -c All \
-            --zip \
-            -o "${AD_OUT_DIR}/bloodhound/" 2>/dev/null && \
-            _ad_ok "BloodHound data recolectada en ${AD_OUT_DIR}/bloodhound/"
-
-        _ad_finding "INFO" "BloodHound — Datos Recolectados" \
-            "<p>Datos de BloodHound recolectados en <code>${AD_OUT_DIR}/bloodhound/</code>. Importar en BloodHound GUI para análisis visual de attack paths.</p>
-            <p>Queries útiles en BloodHound:
-            <ul><li>Find Shortest Paths to Domain Admins</li>
-            <li>Find Principals with DCSync Rights</li>
-            <li>Find AS-REP Roastable Users</li>
-            <li>Shortest Path to Unconstrained Delegation Systems</li></ul></p>" \
-            "N/A" \
-            "Instalar BloodHound: sudo apt install bloodhound" \
-            "bloodhound-python -u ${AD_USER} -p '${AD_PASS}' -d ${AD_DOMAIN_FQDN} -ns ${AD_DC_IP} -c All --zip"
-    else
-        _ad_finding "INFO" "BloodHound No Disponible" \
-            "<p>Instalar para análisis completo de attack paths:</p>
-            <code>pip3 install bloodhound --break-system-packages</code><br>
-            <code>sudo apt install bloodhound</code>" \
-            "N/A" "pip3 install bloodhound --break-system-packages" \
-            "bloodhound-python -u ${AD_USER} -p '${AD_PASS}' -d ${AD_DOMAIN_FQDN} -ns ${AD_DC_IP} -c All"
-    fi
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 34: IMPACKET — Verificar herramientas disponibles
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[32/35] Impacket — Verificación de herramientas ofensivas"
-    local impacket_tools=(GetUserSPNs GetNPUsers secretsdump psexec smbclient wmiexec atexec dcomexec)
-    local avail=() missing=()
-    for tool in "${impacket_tools[@]}"; do
-        if command -v "impacket-${tool}" >/dev/null 2>&1 || \
-           command -v "${tool}.py" >/dev/null 2>&1; then
-            avail+=("$tool")
-        else
-            missing+=("$tool")
-        fi
-    done
-    _ad_log "Impacket disponible: ${#avail[@]}/${#impacket_tools[@]} herramientas"
-
-    # ════════════════════════════════════════════════════════════
-    # CHECK 35: ENUMERACIÓN COMPLETA — Volcar datos para análisis offline
-    # ════════════════════════════════════════════════════════════
-    _ad_log "[33/35] Dump completo de usuarios del dominio"
-    _ldap "(objectClass=user)" \
-        "sAMAccountName cn mail department title lastLogonTimestamp userAccountControl pwdLastSet" \
-        > "${AD_OUT_DIR}/all_users.txt" 2>/dev/null
-    local user_total
-    user_total=$(grep -c "^dn:" "${AD_OUT_DIR}/all_users.txt" 2>/dev/null || echo 0)
-    _ad_log "Usuarios exportados: ${user_total} → ${AD_OUT_DIR}/all_users.txt"
-
-    _ad_log "[34/35] Dump de grupos y membresías"
-    _ldap "(objectClass=group)" "cn description member managedBy" \
-        > "${AD_OUT_DIR}/all_groups.txt" 2>/dev/null
-
-    _ad_log "[35/35] Dump de equipos del dominio"
-    _ldap "(objectClass=computer)" \
-        "cn dNSHostName operatingSystem operatingSystemVersion lastLogonTimestamp" \
-        > "${AD_OUT_DIR}/all_computers.txt" 2>/dev/null
-    local comp_total
-    comp_total=$(grep -c "^dn:" "${AD_OUT_DIR}/all_computers.txt" 2>/dev/null || echo 0)
-    _ad_log "Equipos exportados: ${comp_total} → ${AD_OUT_DIR}/all_computers.txt"
-
-    # ════════════════════════════════════════════════════════════
-    # RESUMEN FINAL ADPULSE
-    # ════════════════════════════════════════════════════════════
-    echo
-    echo -e "${C_PUR}  ╔════════════════════════════════════════════╗${C_RST}"
-    echo -e "${C_PUR}  ║       ADPulse — Resumen del Análisis        ║${C_RST}"
-    echo -e "${C_PUR}  ╚════════════════════════════════════════════╝${C_RST}"
-    echo
-    echo -e "  Dominio  : ${C_YEL}${AD_DOMAIN_FQDN}${C_RST}"
-    echo -e "  DC       : ${C_YEL}${AD_DC_IP}${C_RST}"
-    echo -e "  Usuarios : ${C_CYN}${user_total}${C_RST}"
-    echo -e "  Equipos  : ${C_CYN}${comp_total}${C_RST}"
-    echo
-    echo -e "  ${C_RED}Críticos  : ${AD_CRITICAL}${C_RST}"
-    echo -e "  ${C_YEL}Altos     : ${AD_HIGH}${C_RST}"
-    echo -e "  ${C_CYN}Medios    : ${AD_MEDIUM}${C_RST}"
-    echo -e "  ${C_DIM}Bajos/Info: $((AD_LOW + AD_INFO))${C_RST}"
-    echo
-
-    # Kerberoastable
-    if (( ${#AD_KERBEROASTABLE[@]} > 0 )); then
-        echo -e "  ${C_RED}[💥 PRIORIDAD]${C_RST} Kerberoastable: ${AD_KERBEROASTABLE[*]}"
-    fi
-    if (( ${#AD_ASREPROASTABLE[@]} > 0 )); then
-        echo -e "  ${C_RED}[💥 PRIORIDAD]${C_RST} AS-REP Roastable: ${AD_ASREPROASTABLE[*]}"
-    fi
-    if (( ${#AD_ADCS_TEMPLATES[@]} > 0 )); then
-        echo -e "  ${C_RED}[💥 PRIORIDAD]${C_RST} ADCS vulnerables: ${AD_ADCS_TEMPLATES[*]}"
-    fi
-
-    echo
-    echo -e "  Archivos generados:"
-    echo -e "  ${C_CYN}${AD_OUT_DIR}/all_users.txt${C_RST}      — todos los usuarios"
-    echo -e "  ${C_CYN}${AD_OUT_DIR}/all_groups.txt${C_RST}     — todos los grupos"
-    echo -e "  ${C_CYN}${AD_OUT_DIR}/all_computers.txt${C_RST}  — todos los equipos"
-    echo -e "  ${C_CYN}${AD_OUT_DIR}/kerberoastable.txt${C_RST} — SPNs para crackear"
-    [[ -f "${AD_OUT_DIR}/gpos.txt" ]] && \
-        echo -e "  ${C_CYN}${AD_OUT_DIR}/gpos.txt${C_RST}             — GPOs del dominio"
-    echo
-
-    # Guardar intel para el reporte
-    prog_modulo 45 "ADPulse — Active Directory Audit"
-    spinner_start "ADPulse — Active Directory Audit"
-}
 
 
 
@@ -7551,7 +7334,8 @@ PYAD
     [[ -n "$ad_hash" ]]  && py_args+=" --hash \"${ad_hash}\""
 
     cmd_show "python3 ${adpulse_py} ${py_args}"
-    eval "python3 '${adpulse_py}' ${py_args}" 2>/dev/null | tee "${OUTPUT_DIR}/recon/adpulse_output.txt"
+    # Usar array para evitar word-splitting e inyección en eval
+    python3 "${adpulse_py}" ${py_args} 2>/dev/null | tee "${OUTPUT_DIR}/recon/adpulse_output.txt"
 
     # ── Parsear JSON y agregar hallazgos al reporte HTML ─────────
     if [[ -f "$adpulse_json" ]]; then
@@ -7671,9 +7455,32 @@ PYADREPORT
 # EFFECTIVE_PAYLOADS / ATTACK_ROUTES / REPORT_* — ver inicialización global
 
 # ── Registrar payload efectivo (llamar desde módulos) ───────────
+# ── Sanitizador HTML para reportes ──────────────────────────────
+html_esc() {
+    # Usa $'\xNN' para < > " — evita ambigüedad con redirecciones en bash
+    local s="$1"
+    s="${s//&/&amp;}"
+    s="${s//$'\x3c'/&lt;}"
+    s="${s//$'\x3e'/&gt;}"
+    s="${s//$'\x22'/&quot;}"
+    printf '%s' "$s"
+}
+
 register_payload() {
     # register_payload TIPO PAYLOAD URL EVIDENCIA
     EFFECTIVE_PAYLOADS+=("${1}|||${2}|||${3}|||${4}")
+    # Notificar al sistema de sesión — este payload funcionó
+    _session_record_hit "${1}" "${2}"
+}
+
+_session_record_hit() {
+    local tipo="${1,,}" payload="$2"
+    case "$tipo" in
+        sqli) SES_PRIORITY_SQLI=("$payload" "${SES_PRIORITY_SQLI[@]}") ;;
+        xss)  SES_PRIORITY_XSS=("$payload"  "${SES_PRIORITY_XSS[@]}")  ;;
+        lfi)  SES_PRIORITY_LFI=("$payload"  "${SES_PRIORITY_LFI[@]}")  ;;
+        ssrf) SES_PRIORITY_SSRF=("$payload" "${SES_PRIORITY_SSRF[@]}") ;;
+    esac
 }
 
 # ── Registrar ruta de ataque ─────────────────────────────────────
@@ -9168,6 +8975,7 @@ menu_custom() {
     echo -e "  ${C_GRN}37${C_RST}) HTTP Methods     ${C_GRN}38${C_RST}) Docker/K8s/Infra"
     echo -e "  ${C_GRN}39${C_RST}) XXE              ${C_GRN}40${C_RST}) IDOR+OpenRedirect  ${C_GRN}41${C_RST}) IIS Windows"
     echo -e "  ${C_GRN}43${C_RST}) EDB+NVD Intel    ${C_GRN}44${C_RST}) EDB Búsqueda      ${C_GRN}45${C_RST}) ADPulse Audit"
+    echo -e "  ${C_GRN}46${C_RST}) File Upload Test"
     echo
     echo -ne "${C_YEL}Selección: ${C_RST}"
     read -r seleccion
@@ -9189,9 +8997,289 @@ menu_custom() {
             37) modulo_http_methods ;;  38) modulo_infra_exposure ;;
             39) modulo_xxe ;;           40) modulo_idor_redirect ;;  41) modulo_iis_windows ;;
             43) modulo_edb_intel ;;    44) modulo_edb_search ;;
-            45) modulo_adpulse ;;   45) modulo_adpulse ;;
+            45) modulo_adpulse ;;
+            46) modulo_fileupload ;;
         esac
     done
+}
+
+
+# ════════════════════════════════════════════════════════════════
+# MÓDULO 46: FILE UPLOAD VULNERABILITY TESTER
+# Prueba endpoints de carga de archivos detectados en el scan
+# Si logra subir → notifica en terminal Y en reporte
+# ════════════════════════════════════════════════════════════════
+modulo_fileupload() {
+    [[ ${#WEB_PORTS[@]} -eq 0 ]] && return
+    prog_modulo 46 "File Upload — Prueba de carga de archivos"
+
+    local proto="http"
+    local port="${WEB_PORTS[0]}"
+    [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
+    local base_url="${ORIGINAL_URL:-${proto}://${TARGET}}"
+
+    # ── Construir lista de endpoints candidatos ───────────────────
+    # 1. Rutas sensibles detectadas por gobuster/nuclei
+    # 2. Endpoints de API detectados
+    # 3. Rutas típicas de upload por CMS/framework
+    local -a upload_endpoints=()
+
+    # Rutas conocidas del scan anterior
+    for path in "${INTEL_SENSITIVE_PATHS[@]:-}"; do
+        [[ "$path" =~ upload|media|file|attach|image|avatar|document|import ]] && \
+            upload_endpoints+=("${base_url}${path}")
+    done
+    for ep in "${INTEL_API_ENDPOINTS[@]:-}"; do
+        [[ "$ep" =~ upload|media|file|attach|image|avatar|document|import ]] && \
+            upload_endpoints+=("$ep")
+    done
+
+    # Rutas genéricas comunes
+    local common_paths=(
+        "/upload" "/uploads" "/upload.php" "/api/upload"
+        "/api/v1/upload" "/api/v2/upload" "/api/files"
+        "/media/upload" "/media" "/files/upload" "/files"
+        "/admin/upload" "/admin/media" "/user/avatar"
+        "/profile/avatar" "/attachments" "/documents"
+        "/wp-content/uploads" "/wp-admin/media-new.php"
+        "/fileupload" "/file-upload" "/data/upload"
+        "/images/upload" "/assets/upload" "/static/upload"
+        "/api/media" "/api/attachments" "/api/documents"
+        "/v1/files" "/v2/files" "/rest/files"
+        "/import" "/data/import" "/bulk/import"
+    )
+
+    # Añadir rutas CMS-específicas según INTEL
+    case "${INTEL_CMS:-}" in
+        wordpress) common_paths+=("/wp-json/wp/v2/media" "/xmlrpc.php") ;;
+        laravel)   common_paths+=("/api/upload" "/storage/upload") ;;
+        django)    common_paths+=("/media/upload" "/api/upload/") ;;
+        joomla)    common_paths+=("/administrator/index.php?option=com_media") ;;
+    esac
+
+    for path in "${common_paths[@]}"; do
+        upload_endpoints+=("${base_url}${path}")
+    done
+
+    # Deduplicar
+    IFS=$'\n' read -r -d '' -a upload_endpoints < <(printf '%s\n' "${upload_endpoints[@]}" | sort -u && printf '\0')
+
+    local total="${#upload_endpoints[@]}"
+    echo -e "\n  ${C_CYN}[*]${C_RST} Endpoints a probar: ${C_YEL}${total}${C_RST}"
+
+    # ── Crear archivos de prueba ─────────────────────────────────
+    local test_dir="${OUTPUT_DIR}/fileupload"
+    mkdir -p "$test_dir"
+
+    local probe_content="prueba de post en sitio"
+
+    # .txt — sin riesgo, detecta si acepta cualquier archivo
+    local test_txt="${test_dir}/prueba_upload.txt"
+    echo "$probe_content" > "$test_txt"
+
+    # .php — detecta si acepta scripts ejecutables
+    local test_php="${test_dir}/prueba_upload.php"
+    printf '<?php echo "%s"; ?>' "$probe_content" > "$test_php"
+
+    # .jpg con contenido de texto (bypass de filtro por extensión)
+    local test_jpg="${test_dir}/prueba_upload.jpg"
+    echo "$probe_content" > "$test_jpg"
+
+    # .php.jpg — doble extensión (bypass de filtros tipo "solo imágenes")
+    local test_php_jpg="${test_dir}/prueba_upload.php.jpg"
+    printf '<?php echo "%s"; ?>' "$probe_content" > "$test_php_jpg"
+
+    # .phtml — variante PHP que algunos servidores ejecutan
+    local test_phtml="${test_dir}/prueba_upload.phtml"
+    printf '<?php echo "%s"; ?>' "$probe_content" > "$test_phtml"
+
+    # .php con magic bytes de imagen (bypass de validación por magic bytes)
+    local test_php_magic="${test_dir}/prueba_upload_magic.php"
+    printf 'ÿØÿà<?php echo "%s"; ?>' "$probe_content" > "$test_php_magic"
+
+    # SVG con XSS (bypass en filtros que permiten imágenes)
+    local test_svg="${test_dir}/prueba_upload.svg"
+    printf '<svg xmlns="http://www.w3.org/2000/svg"><script>/* %s */</script></svg>' "$probe_content" > "$test_svg"
+
+    local -a test_files=(
+        "${test_txt}|prueba_upload.txt|text/plain"
+        "${test_jpg}|prueba_upload.jpg|image/jpeg"
+        "${test_php}|prueba_upload.php|application/x-php"
+        "${test_phtml}|prueba_upload.phtml|image/jpeg"
+        "${test_php_jpg}|prueba_upload.php.jpg|image/jpeg"
+        "${test_php_magic}|prueba_upload_magic.php|image/jpeg"
+        "${test_svg}|prueba_upload.svg|image/svg+xml"
+    )
+
+    # ── Probar cada endpoint ──────────────────────────────────────
+    local found_upload=false
+    local upload_results_file="${test_dir}/results.txt"
+    echo "=== File Upload Test — $(date) ===" > "$upload_results_file"
+    echo "Target: ${base_url}" >> "$upload_results_file"
+
+    local tested=0 succeeded=0
+
+    for endpoint in "${upload_endpoints[@]}"; do
+        ((tested++))
+        prog_payload "POST ${endpoint}"
+
+        # Primero verificar que el endpoint responde (evitar timeouts masivos)
+        local head_code
+        head_code=$(curl -skLo /dev/null --max-time 5 -w "%{http_code}" \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "$endpoint" 2>/dev/null)
+
+        # Solo probar si responde (no 404/403 en GET)
+        [[ "$head_code" == "404" ]] && continue
+        [[ "$head_code" == "400" ]] && continue
+
+        for file_spec in "${test_files[@]}"; do
+            IFS='|' read -r file_path file_name mime_type <<< "$file_spec"
+
+            # ── POST multipart/form-data ──────────────────────────
+            local response upload_url=""
+            # Probar con múltiples nombres de campo (file, image, upload, attachment…)
+            local _field_names=("file" "image" "upload" "attachment" "document" "avatar" "photo" "data")
+            local response=""
+            local _fn
+            for _fn in "${_field_names[@]}"; do
+                response=$(curl -skL --max-time 10                     -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"                     -X POST                     -F "${_fn}=@${file_path};type=${mime_type}"                     -F "name=${file_name}"                     -F "filename=${file_name}"                     -w "\n|||HTTP_CODE:%{http_code}|||REDIRECT:%{redirect_url}"                     "${endpoint}" 2>/dev/null)
+                local _rc; _rc=$(echo "$response" | grep -oP '(?<=\|\|\|HTTP_CODE:)[0-9]+' || echo "0")
+                [[ "$_rc" =~ ^(200|201|202)$ ]] && break  # éxito → no seguir probando campos
+                sleep 0.1
+            done
+
+            local http_code redirect_url body
+            body=$(echo "$response" | grep -v '|||HTTP_CODE:')
+            http_code=$(echo "$response" | grep -oP '(?<=\|\|\|HTTP_CODE:)[0-9]+' || echo "0")
+            redirect_url=$(echo "$response" | grep -oP '(?<=\|\|\|REDIRECT:)\S+' || echo "")
+
+            # ── Detectar éxito ────────────────────────────────────
+            local upload_success=false
+            local upload_reason=""
+            local detected_upload_url=""
+
+            # Respuesta 200/201 con URL de archivo en el body
+            if [[ "$http_code" =~ ^(200|201|202)$ ]]; then
+                # Buscar URL del archivo subido en la respuesta
+                detected_upload_url=$(echo "$body" | grep -oP '(?<="url"|"path"|"file"|"location"|"src"):\s*"[^"]*"' | \
+                    grep -oP '(?<=")[^"]+\.(?:txt|php|jpg|jpeg|png|gif|pdf|doc|zip)[^"]*' | head -1)
+                [[ -z "$detected_upload_url" ]] && \
+                    detected_upload_url=$(echo "$body" | grep -oP 'https?://[^\s"<>]+\.(?:txt|php|jpg|jpeg|png|gif)' | head -1)
+                [[ -z "$detected_upload_url" ]] && \
+                    detected_upload_url=$(echo "$body" | grep -oP '/[^\s"<>]*(?:upload|media|files|static)[^\s"<>]*\.(?:txt|php|jpg|jpeg|png)' | head -1)
+
+                if [[ -n "$detected_upload_url" ]]; then
+                    upload_success=true
+                    upload_reason="HTTP ${http_code} + URL del archivo en respuesta"
+                    [[ "$detected_upload_url" =~ ^/ ]] && \
+                        detected_upload_url="${base_url}${detected_upload_url}"
+                elif echo "$body" | grep -qiE '"success"\s*:\s*true|"status"\s*:\s*"ok"|"uploaded"\s*:\s*true|"message"\s*:\s*".*upload.*"'; then
+                    upload_success=true
+                    upload_reason="HTTP ${http_code} + JSON success en respuesta"
+                    detected_upload_url="${endpoint}/${file_name} (estimado)"
+                fi
+            fi
+
+            # Redirect post-upload (patrón común en formularios)
+            if [[ ! "$upload_success" == "true" ]] && [[ -n "$redirect_url" ]] && \
+               echo "$redirect_url" | grep -qiE 'success|uploaded|done|media|files'; then
+                upload_success=true
+                upload_reason="Redirect a URL de éxito: ${redirect_url}"
+                detected_upload_url="$redirect_url"
+            fi
+
+            # Verificar si el archivo existe en la ruta estimada
+            if [[ "$upload_success" == "true" ]] && [[ -n "$detected_upload_url" ]]; then
+                local verify_code
+                verify_code=$(curl -skLo /dev/null --max-time 8 \
+                    -w "%{http_code}" "$detected_upload_url" 2>/dev/null)
+                [[ "$verify_code" == "200" ]] && \
+                    upload_reason+=" ✓ VERIFICADO (archivo accesible en ${detected_upload_url})"
+            fi
+
+            if [[ "$upload_success" == "true" ]]; then
+                ((succeeded++))
+                found_upload=true
+
+                # ── NOTIFICACIÓN EN TERMINAL (visible, no se puede perder) ──
+                echo
+                echo -e "  ${C_RED}╔══════════════════════════════════════════════════════════╗${C_RST}"
+                echo -e "  ${C_RED}║  🚨 FILE UPLOAD EXITOSO — VULNERABILIDAD CRÍTICA         ║${C_RST}"
+                echo -e "  ${C_RED}╠══════════════════════════════════════════════════════════╣${C_RST}"
+                echo -e "  ${C_RED}║  Endpoint : ${C_YEL}${endpoint}${C_RST}"
+                echo -e "  ${C_RED}║  Archivo  : ${C_YEL}${file_name}${C_RST} (${mime_type})"
+                echo -e "  ${C_RED}║  Razón    : ${upload_reason}${C_RST}"
+                [[ -n "$detected_upload_url" ]] && \
+                echo -e "  ${C_RED}║  URL subida: ${C_GRN}${detected_upload_url}${C_RST}"
+                echo -e "  ${C_RED}╚══════════════════════════════════════════════════════════╝${C_RST}"
+                echo
+
+                # ── Guardar en archivo de resultados ──────────────
+                echo "=== UPLOAD EXITOSO ===" >> "$upload_results_file"
+                echo "Endpoint : ${endpoint}" >> "$upload_results_file"
+                echo "Archivo  : ${file_name} (${mime_type})" >> "$upload_results_file"
+                echo "Razón    : ${upload_reason}" >> "$upload_results_file"
+                echo "URL      : ${detected_upload_url}" >> "$upload_results_file"
+                echo "HTTP Code: ${http_code}" >> "$upload_results_file"
+                echo "Body     :" >> "$upload_results_file"
+                echo "$body" | head -20 >> "$upload_results_file"
+                echo "---" >> "$upload_results_file"
+
+                # ── Registrar en sistema de hallazgos/reportes ────
+                add_finding "CRÍTICO" \
+                    "File Upload — Carga de archivos sin restricción" \
+                    "Se logró subir el archivo '${file_name}' (${mime_type}) al endpoint ${endpoint}. Razón: ${upload_reason}. URL del archivo subido: ${detected_upload_url}. Esto puede permitir ejecución remota de código (RCE) si se suben archivos PHP/scripts y el servidor los ejecuta." \
+                    "9.8" \
+                    "1) Validar extensiones en el servidor (whitelist, no blacklist). 2) Almacenar archivos subidos fuera del webroot. 3) Renombrar archivos al guardar. 4) Verificar magic bytes, no solo extensión. 5) Configurar Content-Type headers en el storage."
+
+                register_payload "FileUpload" "${file_name}" "${endpoint}" \
+                    "HTTP ${http_code} — archivo subido en: ${detected_upload_url}"
+
+                intel_log "FILE UPLOAD VULN: ${endpoint} → ${detected_upload_url}"
+
+                # Si subimos PHP con éxito, intentar verificar ejecución (solo lectura)
+                if [[ "$file_name" =~ \.php ]] && [[ -n "$detected_upload_url" ]] && \
+                   [[ ! "$detected_upload_url" =~ "(estimado)" ]]; then
+                    local exec_test
+                    exec_test=$(curl -skL --max-time 8 "$detected_upload_url" 2>/dev/null)
+                    if echo "$exec_test" | grep -q "prueba de post en sitio"; then
+                        echo -e "  ${C_RED}🔥 EJECUCIÓN PHP CONFIRMADA en: ${detected_upload_url}${C_RST}"
+                        add_finding "CRÍTICO" \
+                            "RCE — Ejecución de PHP via File Upload" \
+                            "El archivo PHP subido fue ejecutado por el servidor en ${detected_upload_url}. Esto es RCE (Remote Code Execution) — criticidad máxima." \
+                            "10.0" \
+                            "Deshabilitar ejecución de scripts en directorios de upload. Mover uploads fuera del webroot inmediatamente."
+                        echo "=== PHP EJECUTADO ===" >> "$upload_results_file"
+                        echo "URL: ${detected_upload_url}" >> "$upload_results_file"
+                        echo "Output: ${exec_test}" >> "$upload_results_file"
+                    fi
+                fi
+
+                # Para este endpoint ya encontramos vuln — pasar al siguiente
+                break
+            fi
+
+            # Rate limiting entre intentos
+            sleep 0.3
+        done
+
+        # Rate limiting entre endpoints
+        [[ "$INTEL_WAF_DETECTED" == "true" ]] && sleep 1 || sleep 0.1
+    done
+
+    # ── Resumen final ─────────────────────────────────────────────
+    echo
+    if [[ "$found_upload" == "true" ]]; then
+        ok "${C_RED}File Upload: ${succeeded} endpoint(s) vulnerables de ${tested} probados${C_RST}"
+        ok "Resultados detallados: ${C_YEL}${upload_results_file}${C_RST}"
+    else
+        ok "File Upload: ${tested} endpoints probados — sin carga exitosa detectada"
+        echo -e "  ${C_DIM}  Esto no garantiza que no haya vulnerabilidades (puede haber auth requerida)${C_RST}"
+    fi
+
+    echo "$body" > "${test_dir}/last_response.txt" 2>/dev/null || true
+    prog_modulo_ok "${succeeded} vuln(s)"
 }
 
 run_full_scan() {
@@ -9220,6 +9308,9 @@ run_full_scan() {
     modulo_smtp_enum
     modulo_subdominios
 
+    # ── CHECKPOINT: merge Wave 2 (top-1000 ya terminó mientras corría Fase 3)
+    _merge_wave 2
+
     # ── FASE 4
     prog_fase "FASE 4: Fingerprinting Web" "4"
     modulo_waf                # INTEL_WAF_DETECTED → ajusta delay en todos
@@ -9237,6 +9328,10 @@ run_full_scan() {
     modulo_arjun              # Descubre parámetros → alimenta fase 6
     modulo_endpoints          # GraphQL, Swagger, API discovery
     modulo_js_analysis        # Secretos, JWTs, endpoints en bundles
+    modulo_fileupload         # Prueba upload en rutas detectadas
+
+    # ── CHECKPOINT: merge Wave 3 (masscan/nmap -p- ya terminó mientras corría Fase 5)
+    _merge_wave 3
 
     # ── FASE 6
     prog_fase "FASE 6: Vulnerabilidades Web" "6"
@@ -9258,7 +9353,6 @@ run_full_scan() {
 
     # ── FASE 7
     prog_fase "FASE 7: Post-Scan y Reporting" "7"
-    modulo_adpulse        # ADPulse — AD audit si puerto 389/636/445 abierto
     modulo_edb_intel      # Exploit-DB + NVD + GHSA cruzado con el stack
     modulo_adpulse        # ADPulse — Active Directory (si puertos AD detectados)
     modulo_vuln_scan
@@ -9453,6 +9547,22 @@ PYNVD
     [[ $mod_count -eq 0 ]] && echo -e "  ${C_DIM}Sin módulos custom. Agregar en: ${CUSTOM_MODULES_DIR}/${C_RST}"
 }
 
+
+# ─── CLEANUP — mata procesos background al salir ─────────────────
+_cleanup_on_exit() {
+    # Matar Wave 2 y 3 si siguen corriendo
+    [[ "${WAVE2_PID:-0}" -gt 0 ]] && kill "$WAVE2_PID" 2>/dev/null &&         echo -e "
+  ${C_DIM}[cleanup] Wave2 (PID ${WAVE2_PID}) terminado${C_RST}"
+    [[ "${WAVE3_PID:-0}" -gt 0 ]] && kill "$WAVE3_PID" 2>/dev/null &&         echo -e "  ${C_DIM}[cleanup] Wave3 (PID ${WAVE3_PID}) terminado${C_RST}"
+    # Matar spinner si quedó corriendo
+    [[ "${PROG_SPINNER_PID:-0}" -gt 0 ]] && kill "$PROG_SPINNER_PID" 2>/dev/null
+    printf "
+%-80s
+" " "  # Limpiar línea del spinner
+    # Remover el trap para no llamarse recursivamente
+    trap - INT TERM EXIT
+}
+
 # ─── MAIN ───────────────────────────────────────────────────────
 main() {
     # ── Parsear argumentos ────────────────────────────────────────
@@ -9468,6 +9578,7 @@ main() {
             --cron)          do_cron=true;           shift   ;;
             --add-payload)   do_add_payload="$2";   shift 2 ;;
             --payload-type)  PAYLOAD_TYPE_ARG="$2"; shift 2 ;;
+            --session)       SESSION_FILE="$2";      shift 2 ;;
             --show-cves)     _show_cached_cves;      exit 0  ;;
             -*)              err "Opción desconocida: $1"; show_help; exit 1 ;;
             *)               TARGET="$1";            shift   ;;
@@ -9518,6 +9629,11 @@ main() {
     check_deps
     init_update_system
     prog_init  # ← Iniciar sistema de progreso en vivo
+    # Cargar sesión previa si se pasó --session
+    [[ -n "$SESSION_FILE" ]] && session_load "$SESSION_FILE"
+
+    # Trap Ctrl+C — limpiar procesos background antes de salir
+    trap '_cleanup_on_exit' INT TERM EXIT
     load_custom_modules     # carga ~/.wriestTavo/modules/*.sh
     _load_custom_payloads   # carga payloads del usuario en memoria
     preparar_directorio
@@ -9551,6 +9667,7 @@ main() {
     _report_stack_cves
 
     prog_final  # ← Resumen visual de progreso
+    session_save  # ← Guardar sesión para reutilizar
     generar_reporte_html
     generar_tres_reportes
 
